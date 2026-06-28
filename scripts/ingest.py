@@ -48,7 +48,7 @@ all_chunks = []
 
 # Traitement des PDF
 for pdf_file in corpus.glob("*.pdf"):
-    if pdf_file.stem in existing_ids:
+    if pdf_file.name in existing_ids:
         print(f"Skipping {pdf_file.name} (already processed)")
         continue
 
@@ -58,7 +58,7 @@ for pdf_file in corpus.glob("*.pdf"):
 
     for i, chunk in enumerate(chunks):
         all_chunks.append({
-            "project_id": pdf_file.stem,
+            "project_id": pdf_file.name, # IFC_24408_Bujagali.pdf au lieu de IFC_24408_Bujagali
             "project_name": pdf_file.stem,
             "chunk_id": f"{pdf_file.stem}_chunk_{i}",
             "text": chunk,
@@ -70,7 +70,7 @@ for pdf_file in corpus.glob("*.pdf"):
 
 # Traitement des TXT
 for txt_file in corpus.glob("*.txt"):
-    if txt_file.stem in existing_ids:
+    if txt_file.name in existing_ids:
         print(f"Skipping {txt_file.name} (already processed)")
         continue
 
@@ -80,7 +80,7 @@ for txt_file in corpus.glob("*.txt"):
 
     for i, chunk in enumerate(chunks):
         all_chunks.append({
-            "project_id": txt_file.stem,
+            "project_id": txt_file.name, # IFC_24408_Bujagali.txt au lieu de IFC_24408_Bujagali
             "project_name": txt_file.stem,
             "chunk_id": f"{txt_file.stem}_chunk_{i}",
             "text": chunk,
