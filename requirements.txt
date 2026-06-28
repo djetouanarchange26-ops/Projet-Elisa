@@ -1,0 +1,13 @@
+sentence-transformers
+scikit-learn
+lifelines
+pandas
+numpy
+pdfplumber
+streamlit
+faiss-cpu
+shap
+pytesseract
+pdf2image
+openpyxl
+pillow
