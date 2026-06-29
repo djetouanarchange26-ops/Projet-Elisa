@@ -37,4 +37,3 @@ similarity = np.dot(test_1_normalized[0], test_1_normalized[1])
 print(f"Similarity entre les 2 textes de test: {similarity:.4f}")
 print(f"Shape des embeddings du corpus: {embeddings.shape}")
 print(f"Shape d'un vecteur: {embeddings[0].shape}")
-
