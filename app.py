@@ -4,9 +4,79 @@ CA-CIB · Portfolio Management · Energy & Infrastructure Group
 Squelette avec données fictives — sera branché sur analyze() au Bloc 3.1
 """
 
+import sys
+from pathlib import Path
+
 import streamlit as st
 import numpy as np
 import pandas as pd
+import pdfplumber
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+from analyze import analyze
+
+FLAG_LABELS = {
+    "flag1_community":  "Community & Stakeholder Risk",
+    "flag2_pollution":  "Pollution & Monitoring Risk",
+    "flag3_compliance": "Structural Compliance Risk",
+}
+SEVERITY_BY_FLAG = {1: "high", 2: "medium", 3: "low"}
+
+
+def _extract_uploaded_text(uploaded_file):
+    """Extrait le texte d'un fichier uploadé (.pdf ou .txt).
+    ALT: brancher ingest.extract_pdf() pour l'OCR (pdf scannés) si besoin.
+    """
+    if uploaded_file.name.lower().endswith(".txt"):
+        return uploaded_file.read().decode("utf-8", errors="ignore")
+    with pdfplumber.open(uploaded_file) as pdf:
+        return "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+
+def _map_result_to_display(result):
+    """Transforme la sortie de analyze() dans le format attendu par l'UI
+    (mêmes clés que DUMMY, pour réutiliser les blocs d'affichage existants).
+    """
+    pred = result["prediction"]
+
+    flag_scores = {FLAG_LABELS[k]: v for k, v in result["flag_scores"].items()}
+
+    signals = [
+        {
+            "category": f"FLAG {s['source_flag']} — {s['signal'].upper()}",
+            "text":     s["evidence_excerpt"],
+            "severity": SEVERITY_BY_FLAG.get(s["source_flag"], "low"),
+        }
+        for s in result["detected_signals"][:8]
+    ]
+
+    # Un "cas similaire" = un projet historique (agrégation des chunks par max score)
+    by_project = {}
+    for p in result["similar_passages"]:
+        name = p["project_name"]
+        if name not in by_project or p["score"] > by_project[name]["score"]:
+            by_project[name] = p
+    similar_cases = [
+        {"name": p["project_name"], "similarity": p["score"], "outcome": f"Flag : {p['flag_type']}"}
+        for p in sorted(by_project.values(), key=lambda x: x["score"], reverse=True)[:5]
+    ]
+
+    shap_values = {
+        FLAG_LABELS[e["flag"]].replace(" Risk", ""): e["shap_value"]
+        for e in result["shap_explanations"]
+    }
+
+    return {
+        "risk_grade":      pred["risk_grade"],
+        "risk_label":      pred["risk_label"].upper(),
+        "probability_12m": pred["probability_12m"],
+        "flag_scores":     flag_scores,
+        "signals":         signals,
+        "similar_cases":   similar_cases,
+        "shap_values":     shap_values,
+        "survival_curve":  pred["survival_curve"],
+    }
+
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -242,9 +312,17 @@ if page == "🔍 Transaction Analysis":
     col_btn, col_status = st.columns([1, 3])
     with col_btn:
         analyze_clicked = st.button("▶ Run Analysis", type="primary", use_container_width=True)
-    with col_status:
-        if uploaded_file and analyze_clicked:
-            st.info("⏳ Analyse en cours... extraction → embeddings → scoring → SHAP")
+
+    real_result = None
+    analyze_error = None
+    if uploaded_file and analyze_clicked:
+        with col_status:
+            with st.spinner("⏳ Analyse en cours... extraction → embeddings → scoring → SHAP"):
+                try:
+                    extracted_text = _extract_uploaded_text(uploaded_file)
+                    real_result = analyze(extracted_text)
+                except Exception as e:
+                    analyze_error = str(e)
 
     st.markdown("---")
 
@@ -288,11 +366,20 @@ if page == "🔍 Transaction Analysis":
     }
 
     # Affichage conditionnel : si on a cliqué analyze ou pas
-    show_results = analyze_clicked and uploaded_file
+    show_results = real_result is not None
 
-    if not show_results:
+    if analyze_error:
+        st.error(
+            f"❌ L'analyse a échoué : {analyze_error}\n\n"
+            "Le modèle Cox n'est probablement pas encore entraîné "
+            "(`models/cox_model.pkl` manquant — voir checklist.md, point "
+            "`time_to_event`). Résultats de démo affichés ci-dessous en attendant."
+        )
+    elif not show_results:
         # Affiche les résultats fictifs pour la démo
         st.info("👆 Upload a document and click **Run Analysis** to see real results. Below is a demo with sample data.")
+
+    display = _map_result_to_display(real_result) if show_results else DUMMY
 
     # ── Risk Grade Summary ───────────────────────────────
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -300,11 +387,11 @@ if page == "🔍 Transaction Analysis":
 
     col_grade, col_info = st.columns([1, 4])
     with col_grade:
-        grade = DUMMY["risk_grade"]
+        grade = display["risk_grade"]
         st.markdown(f'<div class="risk-grade grade-{grade}">{grade}</div>', unsafe_allow_html=True)
     with col_info:
-        st.markdown(f"**Risk Label:** {DUMMY['risk_label']}")
-        st.markdown(f"**Probability of ESG event in 12 months:** {DUMMY['probability_12m']:.0%}")
+        st.markdown(f"**Risk Label:** {display['risk_label']}")
+        st.markdown(f"**Probability of ESG event in 12 months:** {display['probability_12m']:.0%}")
         st.markdown("**Recommendation:** Escalade immédiate au credit committee. Downgrade proposé.")
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -314,7 +401,7 @@ if page == "🔍 Transaction Analysis":
     st.markdown('<div class="card-title">🎯 Flag Scores</div>', unsafe_allow_html=True)
 
     colors = {"Community & Stakeholder Risk": "#ED1C24", "Pollution & Monitoring Risk": "#f59e0b", "Structural Compliance Risk": "#009B9D"}
-    for label, score in DUMMY["flag_scores"].items():
+    for label, score in display["flag_scores"].items():
         color = colors[label]
         st.markdown(f"""
         <div class="score-row">
@@ -332,7 +419,7 @@ if page == "🔍 Transaction Analysis":
     with col_signals:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">🚨 Detected Signals</div>', unsafe_allow_html=True)
-        for sig in DUMMY["signals"]:
+        for sig in display["signals"]:
             css_class = f"flag-{sig['severity']}"
             icon = "🔴" if sig["severity"] == "high" else ("🟡" if sig["severity"] == "medium" else "🔵")
             st.markdown(f"""
@@ -346,12 +433,22 @@ if page == "🔍 Transaction Analysis":
     with col_doc:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">📄 Annotated Document</div>', unsafe_allow_html=True)
-        st.markdown("**Legend:** "
-                     '<span class="hl-red">Community risk</span> · '
-                     '<span class="hl-orange">Pollution risk</span> · '
-                     '<span class="hl-teal">Compliance risk</span>',
-                     unsafe_allow_html=True)
-        st.markdown(f'<div class="annotated-text">{DUMMY["annotated_text"]}</div>', unsafe_allow_html=True)
+        if show_results:
+            # TODO: surlignage par span non fourni par analyze() — les signaux
+            # détectés (liste de gauche) proviennent de passages historiques
+            # similaires, pas d'une localisation dans le document uploadé.
+            st.caption("Signaux détectés listés à gauche. Texte extrait du document ci-dessous.")
+            st.markdown(
+                f'<div class="annotated-text">{extracted_text[:3000]}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown("**Legend:** "
+                         '<span class="hl-red">Community risk</span> · '
+                         '<span class="hl-orange">Pollution risk</span> · '
+                         '<span class="hl-teal">Compliance risk</span>',
+                         unsafe_allow_html=True)
+            st.markdown(f'<div class="annotated-text">{DUMMY["annotated_text"]}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Survival Curve + SHAP ────────────────────────────
@@ -361,15 +458,20 @@ if page == "🔍 Transaction Analysis":
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">📈 Survival Curve — Probability of No ESG Event</div>', unsafe_allow_html=True)
 
-        # Courbe de survie fictive
-        months = np.arange(0, 61)
-        survival = np.exp(-0.028 * months)  # décroissance exponentielle fictive
-        chart_df = pd.DataFrame({"Months": months, "Survival Probability": survival})
+        if show_results:
+            curve = display["survival_curve"]
+            chart_df = pd.DataFrame({
+                "Months": list(curve.keys()),
+                "Survival Probability": list(curve.values()),
+            }).sort_values("Months")
+        else:
+            # Courbe de survie fictive
+            months = np.arange(0, 61)
+            survival = np.exp(-0.028 * months)  # décroissance exponentielle fictive
+            chart_df = pd.DataFrame({"Months": months, "Survival Probability": survival})
         st.line_chart(chart_df, x="Months", y="Survival Probability", color="#006F4E")
 
-        # Marqueur 12 mois
-        prob_12 = 1 - np.exp(-0.028 * 12)
-        st.markdown(f"**→ P(event within 12 months) = {prob_12:.0%}**")
+        st.markdown(f"**→ P(event within 12 months) = {display['probability_12m']:.0%}**")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -377,10 +479,9 @@ if page == "🔍 Transaction Analysis":
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">🔬 SHAP — Feature Contributions</div>', unsafe_allow_html=True)
 
-        # Graphique SHAP fictif (barres horizontales)
         shap_df = pd.DataFrame({
-            "Feature": list(DUMMY["shap_values"].keys()),
-            "SHAP Value": list(DUMMY["shap_values"].values()),
+            "Feature": list(display["shap_values"].keys()),
+            "SHAP Value": list(display["shap_values"].values()),
         }).sort_values("SHAP Value", ascending=True)
 
         st.bar_chart(shap_df, x="Feature", y="SHAP Value", color="#006F4E", horizontal=True)
@@ -397,7 +498,7 @@ if page == "🔍 Transaction Analysis":
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">📚 Historical Similar Cases</div>', unsafe_allow_html=True)
 
-    for case in DUMMY["similar_cases"]:
+    for case in display["similar_cases"]:
         sim_pct = f"{case['similarity']:.0%}"
         st.markdown(f"""
         <div class="pattern-item severity-high">
