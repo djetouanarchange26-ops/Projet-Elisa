@@ -25,7 +25,7 @@ from sentence_transformers import SentenceTransformer
 from model import build_training_data, train_cox, save_cox_model
 
 # --- Chemins ---
-BASE = Path("C:/Users/djeto/Desktop/Projet-Elisa")
+BASE = Path(__file__).resolve().parent.parent
 CHUNKS_PATH      = BASE / "data/processed/chunks.csv"
 EMBEDDING_PATH   = BASE / "models/embeddings.npy"
 METADATA_PATH    = BASE / "models/chunks_metadata.pkl"

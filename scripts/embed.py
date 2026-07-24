@@ -3,8 +3,9 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 
-chunks_csv = pd.read_csv("C:/Users/djeto/Desktop/Projet-Elisa/data/processed/chunks.csv")
-output = Path("C:/Users/djeto/Desktop/Projet-Elisa/models")
+BASE = Path(__file__).resolve().parent.parent
+chunks_csv = pd.read_csv(BASE / "data/processed/chunks.csv")
+output = BASE / "models"
 output.mkdir(parents=True, exist_ok=True)
 
 metadata_csv = chunks_csv.drop(columns=["text"]) #on récupère les méta données du csv: project_id, chunk_id, flag_type, event, time_to_event, doc_date

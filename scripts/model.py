@@ -19,7 +19,7 @@ from lifelines import CoxPHFitter
 import search
 
 # --- Chemins ---
-BASE = Path("C:/Users/djeto/Desktop/Projet-Elisa")
+BASE = Path(__file__).resolve().parent.parent
 CHUNKS_PATH      = BASE / "data/processed/chunks.csv"
 ANNOTATIONS_PATH = BASE / "data/raw/corpus_cao_ifc.xlsx"   # ton tableur CAO/IFC
 EMBEDDING_PATH   = BASE / "models/embeddings.npy"
@@ -79,12 +79,19 @@ def build_training_data(model, index, metadata):
     for _, ann in annotated.iterrows():
         proj_name = ann["project_name"]
 
-        # CHOIX: concaténer tous les chunks du projet en un seul texte
-        # ALT:   ne prendre que les N premiers chunks (ex: 20) pour limiter
-        full_text = " ".join(project_texts[proj_name])
-
-        # Calcul des flag scores via search.py
-        scores = search.get_flag_scores(full_text, model, index, metadata, k=15)
+        # CHOIX: on interroge directement avec les chunks déjà existants du
+        # projet (déjà dimensionnés à ~175 mots par ingest.py) plutôt que de
+        # les recoller en un seul texte puis les re-découper — évite un
+        # travail redondant et garde les frontières de chunk d'origine.
+        # exclude_project : le projet est lui-même dans l'index FAISS, sans
+        # ce filtre chaque chunk se retrouverait "plus proche voisin de
+        # lui-même" (score ~1.0), une fuite de données qui gonfle les scores
+        # d'entraînement indépendamment de toute similarité avec d'autres
+        # projets.
+        scores = search.get_flag_scores_from_chunks(
+            project_texts[proj_name], model, index, metadata, k=15,
+            exclude_project=proj_name,
+        )
 
         records.append({
             "project_id":       ann.get("project_id", proj_name),
@@ -156,7 +163,18 @@ def train_cox(training_df):
 # PRÉDICTION
 # ============================================================================
 
-def predict_risk(flag_scores, cox_model, horizon_months=12):
+DEFAULT_RISK_THRESHOLDS = [
+    (0.25, "Vigilance", "D"),     # < 25%
+    (0.55, "Attention", "C"),     # 25–55%
+    (0.80, "Alerte",    "B"),     # 55–80%
+    (1.01, "Escalade",  "A"),     # > 80%
+]
+# ALT: seuils plus conservateurs :
+# (0.15, "Vigilance", "D"), (0.40, "Attention", "C"),
+# (0.65, "Alerte", "B"), (1.01, "Escalade", "A")
+
+
+def predict_risk(flag_scores, cox_model, horizon_months=12, risk_thresholds=None):
     """
     Prédit le risque ESG à partir des 3 flag scores.
 
@@ -164,6 +182,10 @@ def predict_risk(flag_scores, cox_model, horizon_months=12):
       flag_scores     : dict avec flag1_community, flag2_pollution, flag3_compliance
       cox_model       : CoxPHFitter entraîné
       horizon_months  : horizon de prédiction
+      risk_thresholds : liste [(seuil_proba, label, grade), ...] triée par
+                        seuil croissant — voir DEFAULT_RISK_THRESHOLDS.
+                        Permet à l'UI (Settings) de surcharger les seuils
+                        sans toucher au code.
 
     Retourne :
       {
@@ -196,16 +218,7 @@ def predict_risk(flag_scores, cox_model, horizon_months=12):
     prob_event = 1.0 - surv_at_horizon
 
     # --- SEUILS DE CLASSIFICATION ---
-    # SEUIL: ajustables selon feedback associée
-    risk_thresholds = [
-        (0.25, "Vigilance", "D"),     # < 25%
-        (0.55, "Attention", "C"),     # 25–55%
-        (0.80, "Alerte",    "B"),     # 55–80%
-        (1.01, "Escalade",  "A"),     # > 80%
-    ]
-    # ALT: seuils plus conservateurs :
-    # (0.15, "Vigilance", "D"), (0.40, "Attention", "C"),
-    # (0.65, "Alerte", "B"), (1.01, "Escalade", "A")
+    risk_thresholds = risk_thresholds or DEFAULT_RISK_THRESHOLDS
 
     risk_label, risk_grade = "Escalade", "A"
     for threshold, label, grade in risk_thresholds:

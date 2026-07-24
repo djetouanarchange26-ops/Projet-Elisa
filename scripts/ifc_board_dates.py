@@ -40,4 +40,26 @@ IFC_BOARD_DATES = {
     "39102": "2018-03-08",  # Bujagali 2 (Refi)
     "32874": "2015-01-21",  # Gulpur Hydro (CONTRÔLE)
     "36402": "2015-11-11",  # KTDA Small Hydro (CONTRÔLE)
+
+    # Ajoutés le 2026-07-23 — projets "contrôle" (event=0) scrapés sur
+    # disclosures.ifc.org pour rééquilibrer le dataset (28 event=1 / 2
+    # event=0 avant ajout). Vérifiés individuellement absents de la base
+    # CAO (cao-ombudsman.org) — voir data/raw/corpus_cao_ifc.xlsx pour le
+    # détail des sources par projet.
+    "30266": "2013-05-16",  # Zhaoheng Hydropower Holdings (CONTRÔLE)
+    "29405": "2010-12-07",  # Cheves Hydro (CONTRÔLE)
+    "28083": "2010-05-13",  # Butwal Power Co / Andhi Khola (CONTRÔLE)
+    "36729": "2015-04-29",  # Cullinan / Petra Diamonds (CONTRÔLE)
+    "28215": "2009-06-19",  # Antares Minerals (CONTRÔLE)
+    "30053": "2013-02-22",  # SEI Solar Power (CONTRÔLE)
+    "28842": "2010-05-13",  # Solar Power Korat 1 (CONTRÔLE)
+    "33943": "2013-07-08",  # Mersin International Port (CONTRÔLE)
+    "28544": "2010-03-18",  # Santa Marta International Terminal (CONTRÔLE)
+    "29472": "2010-05-21",  # TCE Ege Konteyner Terminal (CONTRÔLE)
+    "25637": "2007-05-22",  # GSPL — Gujarat State Petronet (CONTRÔLE)
+    "32859": "2014-05-01",  # Azura Edo IPP (CONTRÔLE)
+    "36787": "2016-10-27",  # Mocuba Solar (CONTRÔLE)
+    "33839": "2017-10-06",  # Dolovo Wind / Čibuk 1 (CONTRÔLE)
+    "27746": "2010-01-22",  # SMP Gold — Saza Makongolosi (CONTRÔLE)
+    "27274": "2010-12-19",  # E-Power S.A. (CONTRÔLE)
 }

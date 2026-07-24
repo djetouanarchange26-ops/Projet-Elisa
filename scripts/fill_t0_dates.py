@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ifc_board_dates import IFC_BOARD_DATES
 
-BASE = Path("C:/Users/djeto/Desktop/Projet-Elisa")
+BASE = Path(__file__).resolve().parent.parent
 XLSX_PATH = BASE / "data/raw/corpus_cao_ifc.xlsx"
 
 COL_IFC_NUM = 2   # colonne B

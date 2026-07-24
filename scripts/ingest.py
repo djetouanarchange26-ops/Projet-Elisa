@@ -5,19 +5,12 @@ from pathlib import Path
 import csv
 import os
 
-corpus = Path("C:/Users/djeto/Desktop/Projet-Elisa/corpus")
-output = Path("C:/Users/djeto/Desktop/Projet-Elisa/data/processed")
+from search import chunk_text
+
+BASE = Path(__file__).resolve().parent.parent
+corpus = BASE / "corpus"
+output = BASE / "data/processed"
 output.mkdir(parents=True, exist_ok=True)
-
-
-def chunk_text(text, chunk_size=175, overlap=50):
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), chunk_size - overlap):
-        chunk = " ".join(words[i:i + chunk_size])
-        if len(chunk.split()) > 30:
-            chunks.append(chunk)
-    return chunks
 
 
 def extract_pdf(pdf_path):

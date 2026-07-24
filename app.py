@@ -1,19 +1,23 @@
 """
 NLP ESG Risk Intelligence — Streamlit Interface
 CA-CIB · Portfolio Management · Energy & Infrastructure Group
-Squelette avec données fictives — sera branché sur analyze() au Bloc 3.1
 """
 
+import html
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-import numpy as np
 import pandas as pd
 import pdfplumber
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
 from analyze import analyze
+from model import DEFAULT_RISK_THRESHOLDS
+from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS
+
+CHUNKS_PATH = Path(__file__).resolve().parent / "data/processed/chunks.csv"
 
 FLAG_LABELS = {
     "flag1_community":  "Community & Stakeholder Risk",
@@ -21,6 +25,41 @@ FLAG_LABELS = {
     "flag3_compliance": "Structural Compliance Risk",
 }
 SEVERITY_BY_FLAG = {1: "high", 2: "medium", 3: "low"}
+HL_CLASS_BY_FLAG = {1: "hl-red", 2: "hl-orange", 3: "hl-teal"}
+RECOMMENDATION_BY_GRADE = {
+    "A": "Escalade immédiate au credit committee. Downgrade proposé.",
+    "B": "Alerte — downgrade d'un cran proposé.",
+    "C": "Attention — revue renforcée à 90 jours.",
+    "D": "Vigilance — monitoring standard.",
+}
+
+
+def _build_annotated_html(text, spans, limit=3000):
+    """Construit le HTML du document avec surlignage des signaux détectés.
+
+    `spans` est une liste de (start, end, flag_num) — positions dans `text`
+    trouvées par analyze(). Le texte hors-span est échappé pour éviter que
+    du contenu PDF cassé (ex: caractères "<") ne casse le rendu HTML.
+    """
+    text = text[:limit]
+
+    merged = []
+    for start, end, flag_num in sorted(s for s in spans if s[0] < limit):
+        end = min(end, limit)
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end), merged[-1][2])
+        else:
+            merged.append((start, end, flag_num))
+
+    parts = []
+    cursor = 0
+    for start, end, flag_num in merged:
+        parts.append(html.escape(text[cursor:start]))
+        css_class = HL_CLASS_BY_FLAG.get(flag_num, "hl-teal")
+        parts.append(f'<span class="{css_class}">{html.escape(text[start:end])}</span>')
+        cursor = end
+    parts.append(html.escape(text[cursor:]))
+    return "".join(parts)
 
 
 def _extract_uploaded_text(uploaded_file):
@@ -33,10 +72,20 @@ def _extract_uploaded_text(uploaded_file):
         return "\n".join(page.extract_text() or "" for page in pdf.pages)
 
 
+def _format_outcome(row):
+    """Résume l'issue connue d'un projet historique à partir des colonnes
+    event/time_to_event du corpus (pas de texte narratif inventé)."""
+    event = row.get("event")
+    time_to_event = row.get("time_to_event")
+    if event == 1 and time_to_event:
+        return f"Événement ESG survenu à {time_to_event:.0f} mois"
+    if event == 0:
+        return "Aucun événement ESG observé sur la période de suivi"
+    return "Issue non documentée"
+
+
 def _map_result_to_display(result):
-    """Transforme la sortie de analyze() dans le format attendu par l'UI
-    (mêmes clés que DUMMY, pour réutiliser les blocs d'affichage existants).
-    """
+    """Transforme la sortie de analyze() dans le format attendu par l'UI."""
     pred = result["prediction"]
 
     flag_scores = {FLAG_LABELS[k]: v for k, v in result["flag_scores"].items()}
@@ -44,7 +93,7 @@ def _map_result_to_display(result):
     signals = [
         {
             "category": f"FLAG {s['source_flag']} — {s['signal'].upper()}",
-            "text":     s["evidence_excerpt"],
+            "text":     html.escape(s["evidence_excerpt"]),
             "severity": SEVERITY_BY_FLAG.get(s["source_flag"], "low"),
         }
         for s in result["detected_signals"][:8]
@@ -57,14 +106,15 @@ def _map_result_to_display(result):
         if name not in by_project or p["score"] > by_project[name]["score"]:
             by_project[name] = p
     similar_cases = [
-        {"name": p["project_name"], "similarity": p["score"], "outcome": f"Flag : {p['flag_type']}"}
+        {
+            "name":       p["project_name"],
+            "similarity": p["score"],
+            "flag_type":  p["flag_type"],
+            "outcome":    _format_outcome(p),
+            "excerpt":    html.escape(p["text"][:220].strip()),
+        }
         for p in sorted(by_project.values(), key=lambda x: x["score"], reverse=True)[:5]
     ]
-
-    shap_values = {
-        FLAG_LABELS[e["flag"]].replace(" Risk", ""): e["shap_value"]
-        for e in result["shap_explanations"]
-    }
 
     return {
         "risk_grade":      pred["risk_grade"],
@@ -73,9 +123,70 @@ def _map_result_to_display(result):
         "flag_scores":     flag_scores,
         "signals":         signals,
         "similar_cases":   similar_cases,
-        "shap_values":     shap_values,
-        "survival_curve":  pred["survival_curve"],
     }
+
+
+_FLAG_NUM_TO_KEY = {1: "flag1_community", 2: "flag2_pollution", 3: "flag3_compliance"}
+
+
+@st.cache_data
+def _compute_pattern_library():
+    """Calcule les vraies statistiques de patterns depuis chunks.csv : pour
+    chaque catégorie de signal (signals.SIGNAL_KEYWORDS), parmi les projets
+    à événement ESG connu (event=1), combien le mentionnent et quel est le
+    temps moyen avant l'événement pour ces projets-là.
+
+    Remplace le mockup à données fictives — mis en cache car ça scanne
+    l'intégralité du corpus (4203+ chunks) contre 11 catégories de signaux.
+    """
+    if not CHUNKS_PATH.exists():
+        return []
+
+    chunks_df = pd.read_csv(CHUNKS_PATH)
+    events_df = chunks_df.dropna(subset=["event", "time_to_event"])
+    events_df = events_df[events_df["event"] == 1]
+    if events_df.empty:
+        return []
+
+    patterns = []
+    for (flag_num, signal_name), pattern in SIGNAL_PATTERNS.items():
+        is_match = events_df["text"].apply(lambda t: pattern.search(str(t)) is not None)
+        matched_chunks = events_df[is_match]
+        if matched_chunks.empty:
+            continue
+
+        matched_projects = matched_chunks.drop_duplicates("project_name")
+        occurrences = matched_chunks["text"].apply(lambda t: len(pattern.findall(str(t)))).sum()
+        avg_tte = float(matched_projects["time_to_event"].mean())
+
+        patterns.append({
+            "signal":            signal_name,
+            "flag_label":        FLAG_LABELS[_FLAG_NUM_TO_KEY[flag_num]],
+            "n_projects":        len(matched_projects),
+            "occurrences":       int(occurrences),
+            "avg_time_to_event": avg_tte,
+        })
+
+    # Sévérité relative (tertiles sur les avg_time_to_event RÉELLEMENT
+    # observés) plutôt que des seuils absolus en mois : le corpus IFC/CAO a
+    # des délais qui se comptent en années (T0 = approbation IFC, pas date
+    # de début d'exploitation), pas en mois comme le laissait supposer
+    # l'ancien mockup — un seuil fixe type "<10 mois = high" ne différencie
+    # plus rien sur les vraies données (tout tombe dans "low").
+    if patterns:
+        times = sorted(p["avg_time_to_event"] for p in patterns)
+        q1 = times[len(times) // 3]
+        q2 = times[(2 * len(times)) // 3]
+        for p in patterns:
+            if p["avg_time_to_event"] <= q1:
+                p["severity"] = "high"
+            elif p["avg_time_to_event"] <= q2:
+                p["severity"] = "med"
+            else:
+                p["severity"] = "low"
+
+    patterns.sort(key=lambda p: p["n_projects"], reverse=True)
+    return patterns
 
 
 # ── Page config ──────────────────────────────────────────────
@@ -253,6 +364,7 @@ html, body, [class*="css"] {
 }
 .severity-high { background: var(--red-light); border-left: 4px solid var(--red); }
 .severity-med { background: var(--orange-light); border-left: 4px solid var(--orange); }
+.severity-low { background: var(--teal-light); border-left: 4px solid var(--teal); }
 
 /* Sidebar styling */
 section[data-testid="stSidebar"] {
@@ -283,13 +395,15 @@ with st.sidebar:
     )
     st.markdown("---")
     st.markdown("##### 📁 Recent Analyses")
-    st.markdown("""
-    <div style="font-size:0.85rem; color:#666;">
-    🇺🇬 Bujagali Energy (Grade B)<br>
-    🇮🇳 Tata Ultra Mega (Grade A)<br>
-    🇨🇱 Alto Maipo (Grade A)<br>
-    </div>
-    """, unsafe_allow_html=True)
+    _history = st.session_state.get("analysis_history", [])
+    if _history:
+        _rows = "".join(
+            f"{h['document']} (Grade {h['risk_grade']})<br>"
+            for h in reversed(_history[-3:])
+        )
+        st.markdown(f'<div style="font-size:0.85rem; color:#666;">{_rows}</div>', unsafe_allow_html=True)
+    else:
+        st.caption("Aucune analyse cette session.")
     st.markdown("---")
     st.caption("v0.1 MVP · Données publiques IFC/CAO")
 
@@ -299,87 +413,94 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════
 if page == "🔍 Transaction Analysis":
     st.markdown("## 🔍 Transaction Analysis")
-    st.markdown("*Upload a project document to detect ESG risk signals*")
+    st.markdown("*Upload a project document or paste text to detect ESG risk signals*")
 
-    # ── Upload zone ──────────────────────────────────────────
-    uploaded_file = st.file_uploader(
-        "Upload PDF — ESRS, ESIA, Monitoring Report, INSP Review",
-        type=["pdf", "txt"],
-        help="Le fichier est traité localement. Aucune donnée ne quitte votre machine."
+    # ── Input zone — fichier ou texte collé ───────────────────
+    input_mode = st.radio(
+        "Comment fournir le document ?",
+        ["📄 Upload a file", "✍️ Paste text"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
+    uploaded_file = None
+    pasted_text = ""
+    if input_mode == "📄 Upload a file":
+        uploaded_file = st.file_uploader(
+            "Upload PDF — ESRS, ESIA, Monitoring Report, INSP Review",
+            type=["pdf", "txt"],
+            help="Le fichier est traité localement. Aucune donnée ne quitte votre machine."
+        )
+    else:
+        pasted_text = st.text_area(
+            "Coller le texte du document",
+            height=220,
+            placeholder="Coller ici le texte du rapport ESG à analyser...",
+            label_visibility="collapsed",
+        )
+
     # ── Analyze button ───────────────────────────────────────
+    has_input = bool(uploaded_file) or bool(pasted_text.strip())
     col_btn, col_status = st.columns([1, 3])
     with col_btn:
-        analyze_clicked = st.button("▶ Run Analysis", type="primary", use_container_width=True)
+        analyze_clicked = st.button(
+            "▶ Run Analysis", type="primary", use_container_width=True, disabled=not has_input
+        )
 
-    real_result = None
     analyze_error = None
-    if uploaded_file and analyze_clicked:
+    if has_input and analyze_clicked:
         with col_status:
-            with st.spinner("⏳ Analyse en cours... extraction → embeddings → scoring → SHAP"):
+            with st.spinner("⏳ Analyse en cours... extraction → embeddings → scoring"):
                 try:
-                    extracted_text = _extract_uploaded_text(uploaded_file)
-                    real_result = analyze(extracted_text)
+                    extracted_text = pasted_text.strip() or _extract_uploaded_text(uploaded_file)
+                    result = analyze(
+                        extracted_text,
+                        risk_thresholds=st.session_state.get("risk_thresholds"),
+                        k=st.session_state.get("faiss_k", 15),
+                    )
+                    display_result = _map_result_to_display(result)
+                    doc_label = uploaded_file.name if uploaded_file else "Texte collé"
+
+                    # Résultat "actif" affiché ci-dessous — persiste tant que
+                    # l'analyste ne relance pas une analyse ou ne change pas
+                    # d'onglet et ne revient pas (sinon les résultats
+                    # disparaissaient au moindre autre clic sur la page).
+                    st.session_state["last_analysis"] = {
+                        "result":         result,
+                        "display":        display_result,
+                        "extracted_text": extracted_text,
+                        "document":       doc_label,
+                    }
+                    # Historique de session pour Portfolio Dashboard.
+                    st.session_state.setdefault("analysis_history", []).append({
+                        "document":        doc_label,
+                        "timestamp":       datetime.now(),
+                        "risk_grade":      display_result["risk_grade"],
+                        "risk_label":      display_result["risk_label"],
+                        "probability_12m": display_result["probability_12m"],
+                        "dominant_flag":   max(display_result["flag_scores"], key=display_result["flag_scores"].get),
+                    })
                 except Exception as e:
                     analyze_error = str(e)
 
     st.markdown("---")
-
-    # ══════════════════════════════════════════════════════════
-    # RÉSULTATS (données fictives — sera remplacé par analyze())
-    # ══════════════════════════════════════════════════════════
-
-    # --- Données fictives ---
-    DUMMY = {
-        "risk_grade": "A",
-        "risk_label": "ESCALADE",
-        "probability_12m": 0.82,
-        "flag_scores": {
-            "Community & Stakeholder Risk": 87,
-            "Pollution & Monitoring Risk": 45,
-            "Structural Compliance Risk": 32,
-        },
-        "signals": [
-            {"category": "FLAG 1 — COMMUNITY", "text": "NGOs issuing formal statements opposing project continuation", "severity": "high"},
-            {"category": "FLAG 1 — COMMUNITY", "text": "Grievance mechanism independence contested by local leaders", "severity": "high"},
-            {"category": "FLAG 2 — POLLUTION", "text": "Monitoring data gaps identified in quarterly discharge reports", "severity": "medium"},
-            {"category": "FLAG 2 — POLLUTION", "text": "ESAP item on water quality monitoring overdue by 6 months", "severity": "medium"},
-            {"category": "FLAG 3 — COMPLIANCE", "text": "Biodiversity offset plan not submitted within agreed timeline", "severity": "low"},
-        ],
-        "similar_cases": [
-            {"name": "Bujagali Energy (Uganda)", "similarity": 0.89, "outcome": "Worker compensation dispute, 7-year monitoring"},
-            {"name": "Nachtigal Hydro (Cameroon)", "similarity": 0.84, "outcome": "Resettlement complaints, GBVH concerns"},
-            {"name": "Alto Maipo (Chile)", "similarity": 0.78, "outcome": "Water contamination, community conflict, loss of life"},
-        ],
-        "shap_values": {"Community & Stakeholder": 0.42, "Pollution & Monitoring": 0.18, "Structural Compliance": 0.08},
-        "annotated_text": (
-            'The project has faced <span class="hl-red">significant opposition from local fishing communities</span> '
-            'who report declining catches since construction began. '
-            '<span class="hl-red">Three NGOs have issued formal statements</span> calling for project suspension. '
-            'The <span class="hl-orange">quarterly discharge monitoring report for Q2 was not submitted</span> '
-            'within the required timeframe. Water quality parameters at the downstream sampling point '
-            '<span class="hl-orange">exceeded IFC EHS guideline thresholds for total suspended solids</span>. '
-            'The <span class="hl-teal">biodiversity offset equivalence assessment remains pending</span> '
-            'per the ESAP timeline agreed at financial close.'
-        ),
-    }
-
-    # Affichage conditionnel : si on a cliqué analyze ou pas
-    show_results = real_result is not None
 
     if analyze_error:
         st.error(
             f"❌ L'analyse a échoué : {analyze_error}\n\n"
             "Le modèle Cox n'est probablement pas encore entraîné "
             "(`models/cox_model.pkl` manquant — voir checklist.md, point "
-            "`time_to_event`). Résultats de démo affichés ci-dessous en attendant."
+            "`time_to_event`)."
         )
-    elif not show_results:
-        # Affiche les résultats fictifs pour la démo
-        st.info("👆 Upload a document and click **Run Analysis** to see real results. Below is a demo with sample data.")
+        st.stop()
+    elif "last_analysis" not in st.session_state:
+        st.info("👆 Upload a document or paste text, then click **Run Analysis** to see the results.")
+        st.stop()
 
-    display = _map_result_to_display(real_result) if show_results else DUMMY
+    active = st.session_state["last_analysis"]
+    real_result = active["result"]
+    extracted_text = active["extracted_text"]
+    display = active["display"]
 
     # ── Risk Grade Summary ───────────────────────────────
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -392,7 +513,8 @@ if page == "🔍 Transaction Analysis":
     with col_info:
         st.markdown(f"**Risk Label:** {display['risk_label']}")
         st.markdown(f"**Probability of ESG event in 12 months:** {display['probability_12m']:.0%}")
-        st.markdown("**Recommendation:** Escalade immédiate au credit committee. Downgrade proposé.")
+        recommendation = RECOMMENDATION_BY_GRADE.get(grade, "Grade non reconnu.")
+        st.markdown(f"**Recommendation:** {recommendation}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -419,93 +541,51 @@ if page == "🔍 Transaction Analysis":
     with col_signals:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">🚨 Detected Signals</div>', unsafe_allow_html=True)
-        for sig in display["signals"]:
-            css_class = f"flag-{sig['severity']}"
-            icon = "🔴" if sig["severity"] == "high" else ("🟡" if sig["severity"] == "medium" else "🔵")
-            st.markdown(f"""
-            <div class="flag-item {css_class}">
-                {icon} <strong style="font-size:0.7rem;color:#999;">{sig['category']}</strong><br>
-                {sig['text']}
-            </div>
-            """, unsafe_allow_html=True)
+        if display["signals"]:
+            for sig in display["signals"]:
+                css_class = f"flag-{sig['severity']}"
+                icon = "🔴" if sig["severity"] == "high" else ("🟡" if sig["severity"] == "medium" else "🔵")
+                st.markdown(f"""
+                <div class="flag-item {css_class}">
+                    {icon} <strong style="font-size:0.7rem;color:#999;">{sig['category']}</strong><br>
+                    {sig['text']}
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.caption("Aucun signal ESG détecté dans ce document.")
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_doc:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">📄 Annotated Document</div>', unsafe_allow_html=True)
-        if show_results:
-            # TODO: surlignage par span non fourni par analyze() — les signaux
-            # détectés (liste de gauche) proviennent de passages historiques
-            # similaires, pas d'une localisation dans le document uploadé.
-            st.caption("Signaux détectés listés à gauche. Texte extrait du document ci-dessous.")
-            st.markdown(
-                f'<div class="annotated-text">{extracted_text[:3000]}</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown("**Legend:** "
-                         '<span class="hl-red">Community risk</span> · '
-                         '<span class="hl-orange">Pollution risk</span> · '
-                         '<span class="hl-teal">Compliance risk</span>',
-                         unsafe_allow_html=True)
-            st.markdown(f'<div class="annotated-text">{DUMMY["annotated_text"]}</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── Survival Curve + SHAP ────────────────────────────
-    col_surv, col_shap = st.columns(2)
-
-    with col_surv:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">📈 Survival Curve — Probability of No ESG Event</div>', unsafe_allow_html=True)
-
-        if show_results:
-            curve = display["survival_curve"]
-            chart_df = pd.DataFrame({
-                "Months": list(curve.keys()),
-                "Survival Probability": list(curve.values()),
-            }).sort_values("Months")
-        else:
-            # Courbe de survie fictive
-            months = np.arange(0, 61)
-            survival = np.exp(-0.028 * months)  # décroissance exponentielle fictive
-            chart_df = pd.DataFrame({"Months": months, "Survival Probability": survival})
-        st.line_chart(chart_df, x="Months", y="Survival Probability", color="#006F4E")
-
-        st.markdown(f"**→ P(event within 12 months) = {display['probability_12m']:.0%}**")
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col_shap:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">🔬 SHAP — Feature Contributions</div>', unsafe_allow_html=True)
-
-        shap_df = pd.DataFrame({
-            "Feature": list(display["shap_values"].keys()),
-            "SHAP Value": list(display["shap_values"].values()),
-        }).sort_values("SHAP Value", ascending=True)
-
-        st.bar_chart(shap_df, x="Feature", y="SHAP Value", color="#006F4E", horizontal=True)
-
-        st.markdown("""
-        <div style="font-size:0.8rem;color:#666;margin-top:0.5rem;">
-        ↑ Higher SHAP value = stronger contribution to the risk score.<br>
-        Community & Stakeholder risk is the dominant driver for this project.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("**Legend:** "
+                     '<span class="hl-red">Community risk</span> · '
+                     '<span class="hl-orange">Pollution risk</span> · '
+                     '<span class="hl-teal">Compliance risk</span>',
+                     unsafe_allow_html=True)
+        annotated_html = _build_annotated_html(extracted_text, real_result["signal_spans"])
+        st.markdown(
+            f'<div class="annotated-text">{annotated_html}</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Historical Similar Cases ─────────────────────────
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">📚 Historical Similar Cases</div>', unsafe_allow_html=True)
 
-    for case in display["similar_cases"]:
-        sim_pct = f"{case['similarity']:.0%}"
-        st.markdown(f"""
-        <div class="pattern-item severity-high">
-            <strong>{case['name']}</strong> — Similarity: {sim_pct}<br>
-            <span style="font-size:0.82rem;color:#666;">{case['outcome']}</span>
-        </div>
-        """, unsafe_allow_html=True)
+    if display["similar_cases"]:
+        for case in display["similar_cases"]:
+            sim_pct = f"{case['similarity']:.0%}"
+            st.markdown(f"""
+            <div class="pattern-item severity-high">
+                <strong>{case['name']}</strong> — Similarity: {sim_pct} · {case['flag_type']}<br>
+                <span style="font-size:0.82rem;color:#666;">{case['outcome']}</span><br>
+                <span style="font-size:0.78rem;color:#999;font-style:italic;">"{case['excerpt']}…"</span>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.caption("Aucun cas historique similaire trouvé.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -515,36 +595,39 @@ if page == "🔍 Transaction Analysis":
 # ══════════════════════════════════════════════════════════════
 elif page == "📊 Portfolio Dashboard":
     st.markdown("## 📊 Portfolio Dashboard")
-    st.markdown("*Vue agrégée du portefeuille — sera activée en V2*")
+    st.markdown("*Historique des analyses de cette session*")
 
-    # Tableau fictif du portefeuille
-    portfolio_df = pd.DataFrame({
-        "Project": ["Bujagali Energy", "Tata Ultra Mega", "Alto Maipo", "Daehan Wind", "Zarafshan Wind",
-                     "Nachtigal Hydro", "Karot Hydro", "Reventazón HPP"],
-        "Country": ["Uganda", "India", "Chile", "Jordan", "Uzbekistan", "Cameroon", "Pakistan", "Costa Rica"],
-        "Sector": ["Hydropower", "Coal Power", "Hydropower", "Wind", "Wind", "Hydropower", "Hydropower", "Hydropower"],
-        "Risk Grade": ["B", "A", "A", "C", "D", "B", "B", "C"],
-        "P(event 12m)": ["45%", "82%", "76%", "22%", "12%", "51%", "48%", "28%"],
-        "Dominant Flag": ["Community", "Community", "Community + Pollution", "Biodiversity", "Pollution", "Community", "Labor", "Biodiversity"],
-        "Last Updated": ["2026-06-15", "2026-06-10", "2026-06-20", "2026-06-18", "2026-06-22", "2026-06-14", "2026-06-19", "2026-06-21"],
-    })
+    history = st.session_state.get("analysis_history", [])
 
-    # Filtres
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
+    if not history:
+        st.info(
+            "👆 Aucune analyse effectuée cette session. Lance une analyse depuis "
+            "**Transaction Analysis** pour la voir apparaître ici."
+        )
+    else:
+        portfolio_df = pd.DataFrame([
+            {
+                "Document":      h["document"],
+                "Risk Grade":    h["risk_grade"],
+                "Risk Label":    h["risk_label"],
+                "P(event 12m)":  f"{h['probability_12m']:.0%}",
+                "Dominant Flag": FLAG_LABELS[h["dominant_flag"]].replace(" Risk", ""),
+                "Analyzed At":   h["timestamp"].strftime("%Y-%m-%d %H:%M"),
+            }
+            for h in reversed(history)
+        ])
+
         grade_filter = st.multiselect("Filter by Risk Grade", ["A", "B", "C", "D"], default=["A", "B", "C", "D"])
-    with col_f2:
-        sector_filter = st.multiselect("Filter by Sector", portfolio_df["Sector"].unique(), default=portfolio_df["Sector"].unique())
+        filtered = portfolio_df[portfolio_df["Risk Grade"].isin(grade_filter)]
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-    filtered = portfolio_df[portfolio_df["Risk Grade"].isin(grade_filter) & portfolio_df["Sector"].isin(sector_filter)]
-    st.dataframe(filtered, use_container_width=True, hide_index=True)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Analyses", len(filtered))
+        col2.metric("Grade A (Escalade)", len(filtered[filtered["Risk Grade"] == "A"]))
+        col3.metric("Grade B (Alerte)", len(filtered[filtered["Risk Grade"] == "B"]))
+        col4.metric("Grade C-D (Watch)", len(filtered[filtered["Risk Grade"].isin(["C", "D"])]))
 
-    # Métriques résumé
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Projects", len(filtered))
-    col2.metric("Grade A (Escalade)", len(filtered[filtered["Risk Grade"] == "A"]))
-    col3.metric("Grade B (Alerte)", len(filtered[filtered["Risk Grade"] == "B"]))
-    col4.metric("Grade C-D (Watch)", len(filtered[filtered["Risk Grade"].isin(["C", "D"])]))
+    st.caption("Historique de session uniquement — perdu à la fermeture du navigateur (pas de persistance base de données pour l'instant).")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -552,32 +635,28 @@ elif page == "📊 Portfolio Dashboard":
 # ══════════════════════════════════════════════════════════════
 elif page == "📚 Pattern Library":
     st.markdown("## 📚 Pattern Library")
-    st.markdown("*Bibliothèque des signaux ESG historiques détectés dans le corpus IFC/CAO*")
+    st.markdown("*Fréquence réelle des signaux ESG dans le corpus IFC/CAO, et temps moyen avant événement*")
 
-    patterns = [
-        {"signal": "NGOs issuing formal statements opposing project", "flag": "Flag 1 — Community", "frequency": "23 occurrences", "avg_time_to_event": "8 months", "severity": "high"},
-        {"signal": "Grievance mechanism declared non-independent", "flag": "Flag 1 — Community", "frequency": "18 occurrences", "avg_time_to_event": "6 months", "severity": "high"},
-        {"signal": "Local leaders withdraw from consultation process", "flag": "Flag 1 — Community", "frequency": "15 occurrences", "avg_time_to_event": "10 months", "severity": "high"},
-        {"signal": "ESAP items outstanding beyond agreed deadline", "flag": "Flag 2 — Pollution", "frequency": "31 occurrences", "avg_time_to_event": "14 months", "severity": "med"},
-        {"signal": "Water quality parameters exceed EHS thresholds", "flag": "Flag 2 — Pollution", "frequency": "12 occurrences", "avg_time_to_event": "9 months", "severity": "med"},
-        {"signal": "Biodiversity offset not demonstrated", "flag": "Flag 3 — Compliance", "frequency": "8 occurrences", "avg_time_to_event": "18 months", "severity": "low"},
-        {"signal": "PS6 Critical Habitat assessment not updated", "flag": "Flag 3 — Compliance", "frequency": "6 occurrences", "avg_time_to_event": "24 months", "severity": "low"},
-    ]
+    patterns = _compute_pattern_library()
 
-    flag_filter = st.selectbox("Filter by Flag", ["All", "Flag 1 — Community", "Flag 2 — Pollution", "Flag 3 — Compliance"])
+    if not patterns:
+        st.info("Corpus indisponible ou aucun projet à événement connu — impossible de calculer les patterns.")
+    else:
+        flag_options = ["All"] + sorted({p["flag_label"] for p in patterns})
+        flag_filter = st.selectbox("Filter by Flag", flag_options)
 
-    for p in patterns:
-        if flag_filter != "All" and p["flag"] != flag_filter:
-            continue
-        css = "severity-high" if p["severity"] == "high" else "severity-med"
-        st.markdown(f"""
-        <div class="pattern-item {css}">
-            <strong>{p['signal']}</strong><br>
-            <span style="font-size:0.8rem;color:#666;">
-                {p['flag']} · {p['frequency']} · Avg time to event: {p['avg_time_to_event']}
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
+        for p in patterns:
+            if flag_filter != "All" and p["flag_label"] != flag_filter:
+                continue
+            css = f"severity-{p['severity']}"
+            st.markdown(f"""
+            <div class="pattern-item {css}">
+                <strong>{p['signal'].capitalize()}</strong><br>
+                <span style="font-size:0.8rem;color:#666;">
+                    {p['flag_label']} · {p['n_projects']} projet(s) · {p['occurrences']} occurrence(s) · Temps moyen avant événement : {p['avg_time_to_event']:.0f} mois
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -588,12 +667,29 @@ elif page == "⚙️ Settings":
     st.markdown("*Configuration du modèle et des seuils*")
 
     st.markdown("### Risk Grade Thresholds")
+    st.caption("Ces seuils sont appliqués immédiatement à la prochaine analyse lancée dans Transaction Analysis.")
+
+    current_thresholds = st.session_state.get("risk_thresholds", DEFAULT_RISK_THRESHOLDS)
+    t1_default = current_thresholds[0][0]
+    t2_default = current_thresholds[1][0]
+    t3_default = current_thresholds[2][0]
+
     col1, col2 = st.columns(2)
     with col1:
-        t1 = st.slider("Vigilance → Attention", 0.0, 1.0, 0.25, 0.05)
-        t2 = st.slider("Attention → Alerte", 0.0, 1.0, 0.55, 0.05)
+        t1 = st.slider("Vigilance → Attention", 0.0, 1.0, t1_default, 0.05)
+        t2 = st.slider("Attention → Alerte", 0.0, 1.0, t2_default, 0.05)
     with col2:
-        t3 = st.slider("Alerte → Escalade", 0.0, 1.0, 0.80, 0.05)
+        t3 = st.slider("Alerte → Escalade", 0.0, 1.0, t3_default, 0.05)
+
+    if not (t1 < t2 < t3):
+        st.warning("Les seuils doivent être strictement croissants (Vigilance < Attention < Alerte) pour un classement cohérent.")
+
+    st.session_state["risk_thresholds"] = [
+        (t1, "Vigilance", "D"),
+        (t2, "Attention", "C"),
+        (t3, "Alerte", "B"),
+        (1.01, "Escalade", "A"),
+    ]
 
     st.markdown(f"""
     | Grade | Label | Probability Range | Action |
@@ -605,15 +701,25 @@ elif page == "⚙️ Settings":
     """)
 
     st.markdown("### Model Configuration")
-    st.selectbox("Embedding Model", ["all-MiniLM-L6-v2", "FinBERT (production)", "LegalBERT (production)"], index=0)
-    st.number_input("Cox Penalizer", value=0.1, step=0.01)
-    st.number_input("SHAP Background Samples", value=30, step=5)
-    st.number_input("FAISS Top-K", value=10, step=1)
+    st.caption(f"Modèle d'embedding actif : **all-MiniLM-L6-v2** (384 dimensions) — comparatif avec d'autres modèles en cours, voir `checklist.md`.")
+    faiss_k = st.number_input(
+        "FAISS Top-K — voisins interrogés par chunk",
+        min_value=1, max_value=50,
+        value=st.session_state.get("faiss_k", 15), step=1,
+    )
+    st.session_state["faiss_k"] = faiss_k
 
     st.markdown("### Corpus Info")
-    st.markdown("""
-    - **Projects with events:** 21
-    - **Control projects:** 15
-    - **Total chunks:** 939
-    - **Embedding dimension:** 384
-    """)
+    if CHUNKS_PATH.exists():
+        _chunks = pd.read_csv(CHUNKS_PATH)
+        _projects = _chunks.dropna(subset=["event"]).drop_duplicates("project_name")
+        n_events = int((_projects["event"] == 1).sum())
+        n_controls = int((_projects["event"] == 0).sum())
+        st.markdown(f"""
+        - **Projects with events:** {n_events}
+        - **Control projects:** {n_controls}
+        - **Total chunks:** {len(_chunks)}
+        - **Embedding dimension:** 384
+        """)
+    else:
+        st.caption("chunks.csv introuvable — impossible d'afficher les statistiques du corpus.")

@@ -15,7 +15,7 @@ import shap
 import pickle
 from pathlib import Path
 
-BASE = Path("C:/Users/djeto/Desktop/Projet-Elisa")
+BASE = Path(__file__).resolve().parent.parent
 SHAP_BG_PATH = BASE / "models/shap_background.npy"
 
 
