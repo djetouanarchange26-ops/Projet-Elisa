@@ -15,6 +15,7 @@ from pathlib import Path
 from collections import defaultdict
 
 import search
+import llm_confirm
 from model import load_cox_model
 from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS as _SIGNAL_PATTERNS
 
@@ -53,7 +54,7 @@ def _ensure_loaded():
 # aussi utilisée par annote.py pour ré-annoter les chunks du corpus par
 # contenu réel plutôt que par héritage du flag_type du projet entier).
 
-def _find_signals_in_document(pdf_text, context_chars=120):
+def _find_signals_in_document(pdf_text, context_chars=120, llm_confirm_enabled=True):
     """
     Cherche les signaux directement dans le texte du document uploadé.
 
@@ -63,6 +64,19 @@ def _find_signals_in_document(pdf_text, context_chars=120):
       spans    : liste de (start, end, flag_num) — une entrée par occurrence
                  trouvée, utilisée pour surligner le document ("Annotated
                  Document")
+
+    llm_confirm_enabled : filtre de polarité (voir llm_confirm.py, même
+    logique que search.get_flag_scores_from_chunks). Le regex trouve un mot-clé
+    ("grievance", "ESAP"...) sans savoir si le passage décrit un vrai
+    problème ou une situation résolue/positive sur ce même sujet — un LLM
+    confirme avant de garder le signal.
+    FRAGILE: un seul appel LLM par (flag_num, signal_name), sur l'extrait
+    autour de la PREMIÈRE occurrence seulement (pas une par occurrence) —
+    cohérent avec "un appel par signal candidat, pas par page" et avec le
+    fait que l'extrait affiché à l'utilisateur ne montre déjà que cette
+    première occurrence. Limite assumée : si un même mot-clé apparaît une
+    fois en négatif et une fois en positif plus loin dans le document, le
+    verdict du premier extrait s'applique aux deux.
     """
     detected = []
     spans = []
@@ -72,12 +86,15 @@ def _find_signals_in_document(pdf_text, context_chars=120):
         if not matches:
             continue
 
-        spans.extend((m.start(), m.end(), flag_num) for m in matches)
-
         first = matches[0]
         start_ctx = max(0, first.start() - context_chars)
         end_ctx = min(len(pdf_text), first.end() + context_chars)
         excerpt = pdf_text[start_ctx:end_ctx].strip().replace("\n", " ")
+
+        if llm_confirm_enabled and not llm_confirm.confirm_risk(excerpt, flag_num):
+            continue  # LLM juge que ce signal est une mention conforme/positive, pas un vrai risque
+
+        spans.extend((m.start(), m.end(), flag_num) for m in matches)
 
         detected.append({
             "signal":           signal_name,
@@ -115,6 +132,7 @@ def analyze(pdf_text, risk_thresholds=None, k=15):
         "similar_passages":   [{"text": ..., "project_name": ..., ...}, ...],
         "detected_signals":   [{"signal": ..., "confidence": ..., ...}, ...],
         "signal_spans":       [(start, end, flag_num), ...],
+        "recommendation":     "Escalate given confirmed community opposition..." | None,
         "processing_time_s":  12.3,
       }
     """
@@ -141,12 +159,21 @@ def analyze(pdf_text, risk_thresholds=None, k=15):
     # --- Étape 4 : Signaux détectés (dans le document uploadé lui-même) ---
     detected_signals, signal_spans = _find_signals_in_document(pdf_text)
 
+    # --- Étape 5 : Recommandation contextualisée ---
+    # CHOIX: basée sur les signaux réellement détectés (post-filtre LLM),
+    # pas un template fixe par grade — voir llm_confirm.generate_recommendation.
+    # None si Ollama injoignable → app.py retombe sur RECOMMENDATION_BY_GRADE.
+    recommendation = llm_confirm.generate_recommendation(
+        prediction["risk_grade"], prediction["probability_12m"], detected_signals,
+    )
+
     return {
         "flag_scores":       flag_scores,
         "prediction":        prediction,
         "similar_passages":  similar_passages,
         "detected_signals":  detected_signals,
         "signal_spans":      signal_spans,
+        "recommendation":    recommendation,
         "processing_time_s": round(time.time() - t_start, 2),
     }
 

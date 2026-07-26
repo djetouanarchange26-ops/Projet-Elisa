@@ -85,8 +85,8 @@ def test_unit():
         _test("Embeddings shape cohérente",
               embs.shape[0] == n_chunks,
               f"embeddings={embs.shape[0]} vs chunks={n_chunks}")
-        _test("Dimension = 384",
-              embs.shape[1] == 384,
+        _test("Dimension = 768",
+              embs.shape[1] == 768,
               f"Dimension = {embs.shape[1]}")
         norms = np.linalg.norm(embs[:10], axis=1)
         _test("Normalisés L2",
@@ -166,8 +166,8 @@ def test_integration():
         result = analyze(test_text)
         dt = time.time() - t0
         expected_result_keys = [
-            "flag_scores", "prediction", "shap_explanations",
-            "similar_passages", "detected_signals", "processing_time_s",
+            "flag_scores", "prediction", "similar_passages",
+            "detected_signals", "signal_spans", "processing_time_s",
         ]
         _test("analyze() toutes les clés",
               all(k in result for k in expected_result_keys))
@@ -260,19 +260,6 @@ def test_business():
         _test("Cas 1 : signaux détectés",
               len(r1["detected_signals"]) > 0,
               "Aucun signal — vérifier les mots-clés dans analyze._extract_signals")
-
-        # SHAP cohérence
-        top_shap_1 = r1["shap_explanations"][0]
-        _test("Cas 1 SHAP : flag1 domine",
-              top_shap_1["flag"] == "flag1_community",
-              f"Top = {top_shap_1['flag']}",
-              warning_only=True)
-
-        top_shap_3 = r3["shap_explanations"][0]
-        _test("Cas 3 SHAP : flag3 domine",
-              top_shap_3["flag"] == "flag3_compliance",
-              f"Top = {top_shap_3['flag']}",
-              warning_only=True)
 
         # Ordonnancement global
         probs = [r1["prediction"]["probability_12m"],

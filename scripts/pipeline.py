@@ -43,8 +43,12 @@ def retrain():
     # Étape 1 : Modèle d'embedding
     # ------------------------------------------------------------------
     print("\n[1/5] Chargement du modèle d'embedding...")
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    # ALT: "all-mpnet-base-v2" → dimension 768, plus précis mais plus lent
+    model = SentenceTransformer("all-mpnet-base-v2")
+    # CHOIX (2026-07-25): bascule depuis all-MiniLM-L6-v2 — dimension 768,
+    # plus précis, adopté sans confirmation chiffrée que ça règle le
+    # problème de différenciation sur texte externe (comparatif interrompu
+    # volontairement, voir checklist.md "Chantier ouvert"). Plus lent à
+    # l'entraînement (~768 dim vs 384) mais l'inférence live reste ~instantanée.
     # ALT: un modèle fine-tuné sur du texte ESG/finance si tu en trouves un
 
     # ------------------------------------------------------------------

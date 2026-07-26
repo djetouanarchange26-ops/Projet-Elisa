@@ -4,6 +4,7 @@ CA-CIB · Portfolio Management · Energy & Infrastructure Group
 """
 
 import html
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
 from analyze import analyze
 from model import DEFAULT_RISK_THRESHOLDS
 from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS
+import llm_confirm
+import export
 
 CHUNKS_PATH = Path(__file__).resolve().parent / "data/processed/chunks.csv"
 
@@ -26,6 +29,10 @@ FLAG_LABELS = {
 }
 SEVERITY_BY_FLAG = {1: "high", 2: "medium", 3: "low"}
 HL_CLASS_BY_FLAG = {1: "hl-red", 2: "hl-orange", 3: "hl-teal"}
+# FRAGILE: fallback seulement — analyze() génère normalement une recommandation
+# contextualisée via llm_confirm.generate_recommendation (basée sur les signaux
+# réellement détectés). Ce template fixe par grade ne sert que si Ollama est
+# injoignable (result["recommendation"] est None dans ce cas).
 RECOMMENDATION_BY_GRADE = {
     "A": "Escalade immédiate au credit committee. Downgrade proposé.",
     "B": "Alerte — downgrade d'un cran proposé.",
@@ -72,6 +79,33 @@ def _extract_uploaded_text(uploaded_file):
         return "\n".join(page.extract_text() or "" for page in pdf.pages)
 
 
+def _extract_multi_doc_text(uploaded_files):
+    """Concatène le texte de plusieurs documents (ESIA + ESAP + Monitoring
+    Report, typique d'une due diligence) en un seul texte pour analyze().
+
+    CHOIX: concaténation avec séparateur par nom de fichier, pas une
+    analyse séparée par document — garde le pipeline analyze() inchangé
+    (une seule liste de chunks, un seul jeu de flag_scores). Limite assumée
+    (cohérente avec le chantier "annotation page par page", en pause) :
+    les signaux détectés/le surlignage ne distinguent pas de quel document
+    ils viennent, seulement leur position dans le texte concaténé.
+    """
+    parts = []
+    for f in uploaded_files:
+        parts.append(f"\n\n=== {f.name} ===\n\n" + _extract_uploaded_text(f))
+    return "".join(parts)
+
+
+def _safe_filename(label, max_len=60):
+    """`doc_label` peut être un nom de fichier, "Texte collé", ou une liste
+    de plusieurs documents ("3 documents (a.pdf, b.pdf, ...)") — normalise
+    en un nom de fichier de téléchargement propre plutôt que de propager
+    espaces/parenthèses/virgules tels quels."""
+    stem = label.rsplit(".", 1)[0] if "." in label.split("(")[0] else label
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+    return (safe or "analysis")[:max_len]
+
+
 def _format_outcome(row):
     """Résume l'issue connue d'un projet historique à partir des colonnes
     event/time_to_event du corpus (pas de texte narratif inventé)."""
@@ -105,31 +139,60 @@ def _map_result_to_display(result):
         name = p["project_name"]
         if name not in by_project or p["score"] > by_project[name]["score"]:
             by_project[name] = p
+    # CHOIX: résumé LLM calculé seulement sur les 5 cas retenus (pas sur tous
+    # les voisins FAISS bruts, potentiellement des dizaines) — borne le coût
+    # à 5 appels max, mis en cache par texte donc quasi instantané dès le
+    # 2e rendu Streamlit de la même analyse (voir llm_confirm.summarize_passage).
     similar_cases = [
         {
             "name":       p["project_name"],
             "similarity": p["score"],
             "flag_type":  p["flag_type"],
             "outcome":    _format_outcome(p),
-            "excerpt":    html.escape(p["text"][:220].strip()),
+            "excerpt":    html.escape(llm_confirm.summarize_passage(p["text"])),
         }
         for p in sorted(by_project.values(), key=lambda x: x["score"], reverse=True)[:5]
     ]
 
+    # ── Traçabilité : quelles preuves ont influencé chaque flag_score ? ──
+    # CHOIX: dérivé de result["similar_passages"] — les mêmes voisins FAISS
+    # que search.get_flag_scores a utilisés pour calculer flag_scores (pas
+    # un nouvel appel FAISS). Pour chaque flag, les 2 projets (un passage
+    # chacun, meilleur score) dont le flag_type correspond, triés par score.
+    evidence_by_flag = {}
+    for flag_num, flag_key in _FLAG_NUM_TO_KEY.items():
+        by_project_for_flag = {}
+        for p in result["similar_passages"]:
+            if f"Flag {flag_num}" not in str(p["flag_type"]):
+                continue
+            name = p["project_name"]
+            if name not in by_project_for_flag or p["score"] > by_project_for_flag[name]["score"]:
+                by_project_for_flag[name] = p
+        top = sorted(by_project_for_flag.values(), key=lambda x: x["score"], reverse=True)[:2]
+        evidence_by_flag[FLAG_LABELS[flag_key]] = [
+            {
+                "name":    p["project_name"],
+                "score":   round(p["score"] * 100),
+                "excerpt": html.escape(llm_confirm.summarize_passage(p["text"])),
+            }
+            for p in top
+        ]
+
     return {
-        "risk_grade":      pred["risk_grade"],
-        "risk_label":      pred["risk_label"].upper(),
-        "probability_12m": pred["probability_12m"],
-        "flag_scores":     flag_scores,
-        "signals":         signals,
-        "similar_cases":   similar_cases,
+        "risk_grade":       pred["risk_grade"],
+        "risk_label":       pred["risk_label"].upper(),
+        "probability_12m":  pred["probability_12m"],
+        "flag_scores":      flag_scores,
+        "signals":          signals,
+        "similar_cases":    similar_cases,
+        "evidence_by_flag": evidence_by_flag,
     }
 
 
 _FLAG_NUM_TO_KEY = {1: "flag1_community", 2: "flag2_pollution", 3: "flag3_compliance"}
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Chargement des patterns...")
 def _compute_pattern_library():
     """Calcule les vraies statistiques de patterns depuis chunks.csv : pour
     chaque catégorie de signal (signals.SIGNAL_KEYWORDS), parmi les projets
@@ -423,14 +486,17 @@ if page == "🔍 Transaction Analysis":
         label_visibility="collapsed",
     )
 
-    uploaded_file = None
+    uploaded_files = []
     pasted_text = ""
     if input_mode == "📄 Upload a file":
-        uploaded_file = st.file_uploader(
-            "Upload PDF — ESRS, ESIA, Monitoring Report, INSP Review",
+        uploaded_files = st.file_uploader(
+            "Upload PDF(s) — ESRS, ESIA, Monitoring Report, INSP Review",
             type=["pdf", "txt"],
-            help="Le fichier est traité localement. Aucune donnée ne quitte votre machine."
-        )
+            accept_multiple_files=True,
+            help="Une due diligence croise souvent plusieurs documents (ESIA + ESAP + "
+                 "Monitoring Report) — sélectionnez-en plusieurs, ils seront analysés "
+                 "ensemble. Traitement local, aucune donnée ne quitte votre machine.",
+        ) or []
     else:
         pasted_text = st.text_area(
             "Coller le texte du document",
@@ -440,7 +506,7 @@ if page == "🔍 Transaction Analysis":
         )
 
     # ── Analyze button ───────────────────────────────────────
-    has_input = bool(uploaded_file) or bool(pasted_text.strip())
+    has_input = bool(uploaded_files) or bool(pasted_text.strip())
     col_btn, col_status = st.columns([1, 3])
     with col_btn:
         analyze_clicked = st.button(
@@ -452,14 +518,25 @@ if page == "🔍 Transaction Analysis":
         with col_status:
             with st.spinner("⏳ Analyse en cours... extraction → embeddings → scoring"):
                 try:
-                    extracted_text = pasted_text.strip() or _extract_uploaded_text(uploaded_file)
+                    if pasted_text.strip():
+                        extracted_text = pasted_text.strip()
+                        doc_label = "Texte collé"
+                    elif len(uploaded_files) == 1:
+                        extracted_text = _extract_uploaded_text(uploaded_files[0])
+                        doc_label = uploaded_files[0].name
+                    else:
+                        extracted_text = _extract_multi_doc_text(uploaded_files)
+                        doc_label = f"{len(uploaded_files)} documents ({', '.join(f.name for f in uploaded_files)})"
+
                     result = analyze(
                         extracted_text,
                         risk_thresholds=st.session_state.get("risk_thresholds"),
-                        k=st.session_state.get("faiss_k", 15),
+                        # FRAGILE: k (nombre de voisins FAISS interrogés) n'est plus réglable
+                        # depuis Settings (paramètre technique, pas pertinent pour l'analyste
+                        # métier) — valeur validée par défaut, voir checklist.md.
+                        k=15,
                     )
                     display_result = _map_result_to_display(result)
-                    doc_label = uploaded_file.name if uploaded_file else "Texte collé"
 
                     # Résultat "actif" affiché ci-dessous — persiste tant que
                     # l'analyste ne relance pas une analyse ou ne change pas
@@ -478,7 +555,10 @@ if page == "🔍 Transaction Analysis":
                         "risk_grade":      display_result["risk_grade"],
                         "risk_label":      display_result["risk_label"],
                         "probability_12m": display_result["probability_12m"],
-                        "dominant_flag":   max(display_result["flag_scores"], key=display_result["flag_scores"].get),
+                        # FRAGILE: max() sur result["flag_scores"] (clés brutes "flag1_community"...),
+                        # pas display_result["flag_scores"] (clés déjà traduites en libellé humain "Community
+                        # & Stakeholder Risk...") — sinon FLAG_LABELS[...] plante plus loin (Portfolio Dashboard).
+                        "dominant_flag":   max(result["flag_scores"], key=result["flag_scores"].get),
                     })
                 except Exception as e:
                     analyze_error = str(e)
@@ -501,6 +581,30 @@ if page == "🔍 Transaction Analysis":
     real_result = active["result"]
     extracted_text = active["extracted_text"]
     display = active["display"]
+    doc_label = active["document"]
+
+    # ── Export — joindre le résultat à un mémo de comité de crédit ──
+    # CHOIX: généré à chaque rerun (pas de bouton "Generate" séparé) — la
+    # construction PDF/Excel ne fait que mettre en forme des données déjà
+    # calculées par analyze() (pas de nouvel appel FAISS/LLM), donc c'est
+    # quasi instantané, contrairement à l'analyse elle-même.
+    col_exp1, col_exp2, _ = st.columns([1, 1, 3])
+    with col_exp1:
+        st.download_button(
+            "⬇ Export PDF",
+            data=export.build_pdf_report(doc_label, real_result, display),
+            file_name=f"esg_analysis_{_safe_filename(doc_label)}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    with col_exp2:
+        st.download_button(
+            "⬇ Export Excel",
+            data=export.build_excel_report(doc_label, real_result, display),
+            file_name=f"esg_analysis_{_safe_filename(doc_label)}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
     # ── Risk Grade Summary ───────────────────────────────
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -513,7 +617,7 @@ if page == "🔍 Transaction Analysis":
     with col_info:
         st.markdown(f"**Risk Label:** {display['risk_label']}")
         st.markdown(f"**Probability of ESG event in 12 months:** {display['probability_12m']:.0%}")
-        recommendation = RECOMMENDATION_BY_GRADE.get(grade, "Grade non reconnu.")
+        recommendation = real_result.get("recommendation") or RECOMMENDATION_BY_GRADE.get(grade, "Grade non reconnu.")
         st.markdown(f"**Recommendation:** {recommendation}")
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -532,6 +636,24 @@ if page == "🔍 Transaction Analysis":
             <div class="score-num" style="color:{color};">{score}</div>
         </div>
         """, unsafe_allow_html=True)
+        # ── Traçabilité : les passages historiques derrière ce score ────
+        # Point 4.4 de la feuille de route — quels voisins FAISS ont fait
+        # monter ce flag_score, pas juste le chiffre final. Dérivé de
+        # result["similar_passages"] (voir _map_result_to_display), pas
+        # d'appel FAISS supplémentaire.
+        evidence = display["evidence_by_flag"].get(label, [])
+        if evidence:
+            items = "".join(
+                f'<div style="margin:0.15rem 0 0.15rem 1rem;font-size:0.78rem;color:#666;">'
+                f'&#8226; <strong>{e["name"]}</strong> ({e["score"]}%) — <em>{e["excerpt"]}</em></div>'
+                for e in evidence
+            )
+            st.markdown(
+                f'<details style="margin:-0.3rem 0 0.8rem 0;"><summary style="font-size:0.78rem;'
+                f'color:{color};cursor:pointer;">Evidence behind this score ({len(evidence)})</summary>'
+                f'{items}</details>',
+                unsafe_allow_html=True,
+            )
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -581,7 +703,7 @@ if page == "🔍 Transaction Analysis":
             <div class="pattern-item severity-high">
                 <strong>{case['name']}</strong> — Similarity: {sim_pct} · {case['flag_type']}<br>
                 <span style="font-size:0.82rem;color:#666;">{case['outcome']}</span><br>
-                <span style="font-size:0.78rem;color:#999;font-style:italic;">"{case['excerpt']}…"</span>
+                <span style="font-size:0.78rem;color:#999;font-style:italic;">"{case['excerpt']}"</span>
             </div>
             """, unsafe_allow_html=True)
     else:
@@ -664,7 +786,7 @@ elif page == "📚 Pattern Library":
 # ══════════════════════════════════════════════════════════════
 elif page == "⚙️ Settings":
     st.markdown("## ⚙️ Settings")
-    st.markdown("*Configuration du modèle et des seuils*")
+    st.markdown("*Seuils de risque et informations sur le corpus*")
 
     st.markdown("### Risk Grade Thresholds")
     st.caption("Ces seuils sont appliqués immédiatement à la prochaine analyse lancée dans Transaction Analysis.")
@@ -700,15 +822,6 @@ elif page == "⚙️ Settings":
     | A | Escalade | > {t3:.0%} | Escalade immédiate au credit committee |
     """)
 
-    st.markdown("### Model Configuration")
-    st.caption(f"Modèle d'embedding actif : **all-MiniLM-L6-v2** (384 dimensions) — comparatif avec d'autres modèles en cours, voir `checklist.md`.")
-    faiss_k = st.number_input(
-        "FAISS Top-K — voisins interrogés par chunk",
-        min_value=1, max_value=50,
-        value=st.session_state.get("faiss_k", 15), step=1,
-    )
-    st.session_state["faiss_k"] = faiss_k
-
     st.markdown("### Corpus Info")
     if CHUNKS_PATH.exists():
         _chunks = pd.read_csv(CHUNKS_PATH)
@@ -718,8 +831,7 @@ elif page == "⚙️ Settings":
         st.markdown(f"""
         - **Projects with events:** {n_events}
         - **Control projects:** {n_controls}
-        - **Total chunks:** {len(_chunks)}
-        - **Embedding dimension:** 384
+        - **Historical passages indexed:** {len(_chunks)}
         """)
     else:
         st.caption("chunks.csv introuvable — impossible d'afficher les statistiques du corpus.")

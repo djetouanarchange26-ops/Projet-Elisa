@@ -1,12 +1,20 @@
 # Journal de bord — NLP ESG Risk Intelligence
 
-Dernière mise à jour : 2026-07-25
+Dernière mise à jour : 2026-07-25 (points 3 ET 4 avancés — LLM branché, export PDF/Excel, multi-documents, traçabilité ; + retours réunion Elisa du 25/07 consignés, propositions Tier 1-3 en attente d'arbitrage, présentation calée au 25 août)
 
 ## État général
 
 - App Streamlit fonctionnelle en local (`streamlit run app.py`), déployée (Render puis migration Streamlit Cloud en cours de réglage d'accès public)
 - Corpus : 4203 chunks, 46 projets annotés (28 événements CAO / 18 contrôles), 82 documents dans `corpus/`
-- Modèle Cox : C-index 0.758 (k=15, `all-MiniLM-L6-v2`) — mais la différenciation sur un texte externe reste un problème ouvert, voir "Chantier ouvert"
+- Modèle d'embedding : bascule vers `all-mpnet-base-v2` (768 dim) le 2026-07-25 — C-index 0.746 (contre 0.758 avec MiniLM, légère baisse), mais coefficient `flag1_community` plus significatif (p<0.005 contre p=0.01). Le vrai problème de différenciation n'était **pas** l'embedding — voir "Chantier ouvert" résolu ci-dessous.
+- **Intégration LLM (Ollama, `qwen3:4b-instruct`) terminée sur les 4 usages prévus** (`scripts/llm_confirm.py`, 2026-07-25) :
+  1. Filtre de polarité sur `flag_scores` (corrige le vrai bug de différenciation)
+  2. Filtre de polarité sur `detected_signals`/surlignage
+  3. Résumé des cas similaires (`app.py`, remplace l'extrait brut tronqué)
+  4. Recommandation contextualisée (remplace le template fixe par grade)
+  Toutes validées en conditions réelles via l'app Streamlit (tests Playwright, voir sections dédiées). Fail-open partout : si Ollama est injoignable, repli sur l'ancien comportement plutôt qu'un plantage.
+- ⚠️ Perf non optimisée : le débit LLM se dégrade sous charge soutenue (voir "Chantier ouvert — préchauffage du cache LLM") — accepté pour l'instant, priorité aux fonctionnalités (décision utilisateur du 2026-07-25).
+- **3 des 4 fonctionnalités UI de l'étape 4 terminées** (2026-07-25) : export PDF/Excel (`scripts/export.py`, nouvelle dépendance `fpdf2`), upload multi-documents, traçabilité des preuves par flag. Support multilingue reporté. Voir section dédiée.
 - **Les 4 onglets sont maintenant branchés sur de vraies données** (plus aucun mockup) :
   - **Transaction Analysis** : pipeline complet (extraction → FAISS → Cox → signaux)
   - **Portfolio Dashboard** : historique des analyses de la session (`st.session_state`)
@@ -27,6 +35,10 @@ Dernière mise à jour : 2026-07-25
 | `flag_type` hérité du projet entier, pas du contenu du chunk | `annote.py`, `signals.py` | Bruitait l'index FAISS avec des chunks administratifs étiquetés à tort |
 | Résultats de Transaction Analysis perdus au moindre autre clic | `app.py` | Aucune persistance — corrigé via `st.session_state["last_analysis"]` |
 | `.severity-low` (CSS) inexistant | `app.py` | Les signaux "low" de Pattern Library s'affichaient en orange (classe "med") au lieu de teal |
+| `test.py` référençait `shap_explanations` dans `analyze()` | `test.py` | Clé retirée du retour de `analyze()` lors du retrait de SHAP (24/07) sans mettre à jour le test — `KeyError` systématique en intégration/business. Assertions SHAP obsolètes supprimées de `test.py` |
+| `dominant_flag` stocké avec la mauvaise clé | `app.py` | Repéré par l'utilisateur (2026-07-25, capture d'écran) : `analysis_history` stockait `max(display_result["flag_scores"], ...)` — les clés de `display_result["flag_scores"]` sont déjà les libellés humains ("Community & Stakeholder Risk"), pas les clés brutes ("flag1_community") attendues par `FLAG_LABELS[...]` dans Portfolio Dashboard → `KeyError` systématique dès la 1ère analyse. Corrigé en utilisant `result["flag_scores"]` (clés brutes) |
+| Jargon technique exposé à l'analyste dans Settings | `app.py` | Repéré par l'utilisateur (2026-07-25) : section "Model Configuration" (nom du modèle d'embedding, dimensions, réglage FAISS Top-K) et "Embedding dimension" dans Corpus Info — détails d'implémentation sans valeur pour un analyste crédit. Section retirée, `k` FAISS revient à une valeur fixe (15) non exposée en UI |
+| Spinner `@st.cache_data` affichait le nom de fonction Python | `app.py` | Repéré par l'utilisateur (2026-07-25) : Pattern Library affichait "Running _compute_pattern_library()..." (comportement par défaut de `@st.cache_data`). `show_spinner="Chargement des patterns..."` ajouté |
 
 ## ✅ Transaction Analysis — refonte complète
 
@@ -76,24 +88,73 @@ Dernière mise à jour : 2026-07-25
 
 ---
 
-## 🔍 Chantier ouvert — différenciation du scoring FAISS sur texte externe
+## ✅ RÉSOLU — différenciation du scoring FAISS sur texte externe (2026-07-25)
 
-**Constat** : même après la ré-annotation par contenu, un texte neutre de test (rapport de routine) obtient un score quasi identique à un texte décrivant un risque réel, quel que soit k (testé de 3 à 30). Le C-index du corpus s'améliore avec la ré-annotation et avec k, mais ça ne se traduit pas en différenciation sur un nouveau document.
+**Constat initial** : même après la ré-annotation par contenu, un texte neutre de test (rapport de routine) obtient un score quasi identique à un texte décrivant un risque réel, quel que soit k (testé de 3 à 30).
 
-| Version | k=15 : Texte "Flag1 risque" | k=15 : Texte neutre | C-index corpus |
-|---|---|---|---|
-| Avant ré-annotation (flag hérité du projet) | 62/55/0 | 61/61/58 | 0.740 |
-| Après ré-annotation (flag par contenu) | 62/54/0 | 61/57/57 | 0.758 |
+**Fausse piste explorée en premier — le modèle d'embedding** : hypothèse que `all-MiniLM-L6-v2` (22M paramètres) manquait de capacité pour distinguer des textes courts au même registre "rapport ESG formel". Bascule vers `all-mpnet-base-v2` (768 dim, décision prise sans comparatif chiffré complet — voir historique dans le diff git de ce fichier si besoin). **Résultat : le problème s'est reproduit à l'identique avec mpnet** (Cas 4 "projet propre" du test business scorait 78/67/71 sur les 3 flags, presque autant qu'un vrai cas à risque) — la preuve que ce n'était pas une question de capacité du modèle d'embedding.
 
-**Diagnostic actuel** : le goulot d'étranglement n'est plus le bruit des labels ni k — c'est probablement la capacité du modèle d'embedding (`all-MiniLM-L6-v2`, 22M paramètres) à distinguer des textes courts (~150 mots) qui partagent le même registre "rapport ESG formel" même quand leur contenu diffère.
+**Vrai diagnostic** : l'embedding capture le *sujet* d'un passage, pas sa *polarité*. Exemple mesuré : `"The ESAP action plan shows delays"` (risque réel) et `"ESAP actions completed ahead of schedule"` (positif) matchent les mêmes voisins FAISS historiques, parce qu'ils partagent le même vocabulaire technique ESAP — aucun modèle de similarité sémantique pure ne fait cette distinction, quelle que soit sa taille. Un chunk qui *mentionne* un sujet à risque en le décrivant comme résolu/conforme gonflait `flag_scores` presque autant qu'un chunk qui décrit un vrai problème.
 
-**Test embedding en cours (INTERROMPU, à relancer)** : comparaison `all-MiniLM-L6-v2` vs `all-mpnet-base-v2` vs `paraphrase-multilingual-mpnet-base-v2`, script `test_embedding_model.py` dans le scratchpad (non versionné dans le repo — à recréer si besoin, logique décrite ci-dessous).
+**Fix implémenté** : filtre de confirmation par LLM local (`scripts/llm_confirm.py`, Ollama + `qwen3:4b-instruct`), branché dans `search.get_flag_scores_from_chunks` (donc utilisé à la fois par `analyze.py` en live et par `model.build_training_data` à l'entraînement — cohérence train/serve). Voir section dédiée ci-dessous pour le détail.
 
-- **all-MiniLM-L6-v2 (actuel)** : confirmé C-index=0.758 à k=15 (cohérent avec la prod)
-- **all-mpnet-base-v2** : test lancé deux fois, interrompu les deux fois avant la fin (coupures de session) — dimension 384... non, 768 confirmé au démarrage, mais résultat C-index/différenciation jamais obtenu. **À relancer.**
-- **paraphrase-multilingual-mpnet-base-v2** : téléchargement confirmé OK, 768 dimensions, mais **fenêtre de seulement 128 tokens** (plus courte que MiniLM à 256, et plus courte que le chunking actuel de 175 mots) — si retenu, il faudra réduire `CHUNK_SIZE` dans `search.py`/`ingest.py` pour ce modèle spécifiquement. Comparatif C-index/différenciation pas encore lancé.
+**Résultat mesuré** (`test.py --business`, cas 1 = community opposition réel, cas 4 = projet propre) :
 
-**Pourquoi retester le modèle d'embedding** : le corpus contient des documents non-anglophones (ex: le premier PDF de test était en français, "REPUBLIQUE TOGOLAISE") — `all-MiniLM-L6-v2` est majoritairement anglophone, ce qui pourrait contribuer au problème de différenciation en plus de la limite de capacité déjà identifiée.
+| | flag1 | flag2 | flag3 | Cox `probability_12m` |
+|---|---|---|---|---|
+| Cas 1 (risque), avant | 71 | 0 | 0 | 1.31% |
+| Cas 4 (propre), **avant filtre** | 78 | 67 | 71 | 2.97% (> Cas 1 !) |
+| Cas 4 (propre), **après filtre** | 0 | 0 | 0 | 0.02% (< Cas 1 ✅) |
+
+`test.py --business` : 4/5 passés, 0 échec (le 5e est un warning déjà documenté : Cas 3 biodiversité reste bas car les coefficients Cox pour flag2/flag3 sont peu significatifs — data imbalance déjà connu, voir CORRECTIONS.md §4, pas lié à ce chantier).
+
+⚠️ **Le `cox_model.pkl` actuel n'est pas ré-entraîné sur les scores filtrés** (il date d'avant le filtre LLM) — le gain ci-dessus s'observe déjà en inférence (c'est ce qui compte pour l'usage réel), mais il reste un léger décalage train/serve tant que `pipeline.py` n'a pas retourné avec le filtre actif. **Décision du 2026-07-25 : mis en pause délibérément**, voir "Chantier ouvert — préchauffage du cache LLM" ci-dessous pour le pourquoi.
+
+---
+
+## ✅ Filtre de polarité LLM — implémentation (2026-07-25)
+
+**Architecture** : `scripts/llm_confirm.py`, une seule fonction `confirm_risk(chunk_text, flag_num) -> bool`.
+- `signals.flags_mentioned_in_text(chunk)` sert de filtre regex bon marché en amont — ne sollicite le LLM que sur les (chunk, flag) où le vocabulaire du flag est topicalement présent, pas sur tous les chunks
+- Branché dans `search.get_flag_scores_from_chunks(..., llm_confirm=True)` (défaut) : pour chaque chunk, les flags candidats jugés "CLEAN" par le LLM sont exclus de la contribution de CE chunk à l'agrégation max — les autres chunks/flags contribuent normalement
+- Cache disque `models/llm_confirm_cache.json`, clé = `hash(flag_num + définition du flag + texte du chunk)` — invalide automatiquement si `FLAG_LABELS` change, pas seulement si le texte change
+- **Fail-open** : si Ollama est injoignable, `confirm_risk()` retourne `True` (comportement identique à avant le filtre) plutôt que de planter l'analyse — un warning s'affiche une fois par process
+
+**Choix du modèle Ollama — leçon importante** :
+- `qwen3:4b` (variante "hybride") **inutilisable** : insiste pour produire 400 à 1400 tokens de raisonnement interne (`<think>...</think>`) même avec `think:false` (API) ou `/no_think` (suffixe prompt, convention native Qwen3) — mesuré 25 à 95 secondes par appel
+- `qwen3:4b-instruct` (variante dédiée, sans raisonnement étendu) : répond directement en 1 mot, **~2s/appel à chaud** (modèle déjà résident en mémoire), correct sur les 4 cas de test manuels (`python llm_confirm.py`)
+- **Leçon générale** : le débit brut de génération sur ce CPU n'est pas le problème (~17 tokens/s, correct pour un 4B) — c'est la longueur de la réponse qui détermine la latence. Toujours vérifier qu'un modèle "thinking" n'ajoute pas un raisonnement cascade avant de le jeter comme "trop lent".
+
+**Usage live (analyze.py/app.py) validé et fonctionnel** — chaque document uploadé ne déclenche qu'une poignée d'appels LLM (proportionnel à ses propres chunks), latence ~2-4s/appel, sans souci observé.
+
+**Ce qui reste ouvert** :
+- `predict_risk` (Cas 3 biodiversité) sous-pondère flag2/flag3 — data imbalance connu (§4 CORRECTIONS.md), pas réglé par ce filtre
+- Le filtre LLM ne s'applique qu'aux flags topicalement candidats via regex (`signals.py`) — un chunk sémantiquement proche d'un flag sans en partager le vocabulaire littéral n'est pas soumis au filtre (angle mort assumé, cohérent avec l'architecture hybride regex+LLM déjà actée)
+
+## ✅ Confirmation LLM sur `detected_signals` (2026-07-25)
+
+Branché dans `analyze._find_signals_in_document()` (`scripts/analyze.py`) — même mécanique que `flag_scores` : un appel LLM par (flag_num, signal_name) candidat via regex, sur l'extrait affiché à l'utilisateur (contexte autour de la première occurrence). Si le LLM juge "CLEAN", le signal est exclu à la fois de `detected_signals` (carte "Detected Signals") ET de `signal_spans` (surlignage du document).
+
+Validé : texte "risque" → 9 signaux détectés (inchangé) ; texte "propre" (mentionne stakeholder/ESAP/biodiversity de façon positive) → **0 signal détecté** (en aurait déclenché plusieurs avant, par simple présence des mots-clés).
+
+⚠️ Limite assumée : un seul appel par (flag_num, signal_name), basé sur la première occurrence seulement — si le même mot-clé apparaît une fois en négatif et une fois en positif ailleurs dans le document, le verdict du premier extrait s'applique aux deux occurrences.
+
+⚠️ **Nouveau constat de perf (2026-07-25)** : le débit des appels LLM se dégrade aussi en **séquentiel soutenu**, pas seulement en parallèle — observé pendant `test.py` (~25 appels/min → ~7 appels/min après quelques minutes). Comme `analyze()` peut désormais déclencher jusqu'à ~15-20 appels LLM séquentiels par document (signals + flag_scores), une session avec plusieurs documents enchaînés pourrait ralentir progressivement. **Décision : pas d'investigation pour l'instant** (priorité au reste des fonctionnalités, voir feuille de route) — à reprendre si ça devient gênant en usage réel.
+
+---
+
+## 🔍 Chantier ouvert — préchauffage du cache LLM pour le ré-entraînement complet
+
+**Objectif initial** : appeler `confirm_risk` sur tout le corpus (3962 paires (chunk, flag), 46 projets exploitables) pour ré-entraîner `cox_model.pkl` sur des scores cohérents avec le filtre LLM. En séquentiel : ~132 min, jugé trop long.
+
+**Tentative de parallélisation — instable, cause non identifiée avec certitude** :
+- Un premier test court (24-41 appels, quelques dizaines de secondes) à 16 threads montrait un débit qui **démarre bien puis se dégrade progressivement** sur la durée : ~5s/appel au début, jusqu'à ~90s/appel après ~1min30 de charge soutenue.
+- Un test court à 4 threads semblait stable (~74 appels/min, aucune dégradation sur 12-26s) — **conclusion prématurée**. Un run réel de plusieurs minutes à 4 threads via `scripts/warm_llm_cache.py` s'est avéré tout aussi lent (~11 appels/min), y compris après avoir supprimé un point de contention identifié (écriture disque du cache à chaque appel sous verrou — corrigé mais sans effet sur le débit).
+- Test de confirmation : appeler `confirm_risk` directement via le module (pas seulement des requêtes HTTP brutes), à petite échelle (16 tâches), reste rapide (78/min) — donc ce n'est ni la fonction elle-même, ni le verrou/cache.
+- **Hypothèse retenue, non vérifiée** : accumulation de pression mémoire/contexte côté Ollama sur charge *soutenue* (au-delà d'1-2 min), indépendamment du niveau de concurrence — 16 threads atteint le mur plus vite que 4, mais les deux semblent y arriver. Pistes non explorées : `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`, redémarrage périodique du service Ollama pendant le batch.
+- Un premier run à 15s de timeout a échoué silencieusement (fail-open partout, cache resté bloqué à 21 entrées) à cause de ce ralentissement dépassant le timeout — corrigé en remontant le timeout à 60s, mais ça ne règle que le symptôme (échec silencieux), pas le ralentissement lui-même.
+
+**Décision (2026-07-25)** : mis en pause. Le fix qui compte réellement — le filtre en direct sur `analyze()`/`app.py` — est déjà validé et fonctionnel (voir section précédente), et n'est pas affecté par ce problème (usage en courtes rafales, pas de charge soutenue). Le ré-entraînement complet du Cox sur scores filtrés reste à faire, mais n'est pas bloquant. **Ne pas relancer `scripts/warm_llm_cache.py` sur tout le corpus avant d'avoir diagnostiqué la cause racine** — risque de tourner des heures pour un résultat imprévisible.
 
 ---
 
@@ -101,17 +162,15 @@ Dernière mise à jour : 2026-07-25
 
 Ordre validé par l'utilisateur :
 
-1. **Choisir le modèle d'embedding** (EN COURS — comparatif interrompu, à relancer : MiniLM vs mpnet vs multilingue)
-2. **Intégrer un modèle d'IA open source local** (LLM via Ollama — voir `migration-signaux-ollama.md`, plan pour plus tard). Ajustements déjà discutés à appliquer le moment venu :
-   - Approche **hybride regex+LLM** : `signals.py` localise les candidats, le LLM confirme/infirme selon contexte et négation (pas un remplacement total du regex) — règle la latence (un appel par signal candidat, pas par page) ET le problème de surlignage (position déjà connue via regex)
-   - `annote.py` reste sur le regex pur (job batch, pas latence-sensible) — une seule définition de référence pour "c'est quoi un signal Flag X"
-   - Cache de détection à indexer sur `hash(texte + définitions de signaux)`, pas juste le texte seul, pour ne pas servir des résultats périmés si `SIGNAL_KEYWORDS` change
-   - Vérifier la disponibilité réelle du tag de modèle Ollama choisi avant de lancer (`ollama list`), privilégier un petit modèle (1-4B) vu la contrainte CPU
+1. **Choisir le modèle d'embedding** (FAIT le 2026-07-25, sur `all-mpnet-base-v2` — **s'est avéré ne pas être le vrai problème**, voir section résolue ci-dessus. Gardé en prod car légèrement meilleur sur la significativité de flag1, pas de raison de revenir en arrière.)
+2. **Intégrer un modèle d'IA open source local** — Ollama installé, `qwen3:4b-instruct` retenu (voir section dédiée ci-dessus pour le pourquoi de ce tag précis plutôt que `qwen3:4b`). Note : `migration-signaux-ollama.md` référencé ici auparavant **n'a jamais existé comme fichier** — le contenu du plan est directement dans ce document. Architecture effectivement appliquée (hybride regex+LLM, cache par hash, fail-open) : voir "Filtre de polarité LLM" ci-dessus.
 3. **Cas d'usage LLM prioritaires (points 1-3)** :
-   - Confirmation de signaux (regex localise, LLM confirme/infirme selon contexte et négation)
-   - Cas similaires enrichis (résumé généré plutôt qu'extrait brut)
-   - Recommandation contextualisée (basée sur les signaux réellement détectés, pas un template fixe par grade)
-4. **Construire l'interface graphique définitive** — inclut maintenant les 4 nouvelles fonctionnalités validées (voir section dédiée ci-dessous)
+   - ✅ **Confirmation de signaux — FAIT sur `flag_scores`/Cox ET sur `detected_signals`** (les deux, 2026-07-25). La portée initiale ne visait que l'affichage UI (`detected_signals`) ; le vrai bug reproductible (Cas 4 "propre" scorait 78/67/71) venait de `flag_scores`, corrigé en premier, puis le même mécanisme branché sur `detected_signals`/`signal_spans` (voir sections dédiées ci-dessus).
+   - ✅ **Cas similaires enrichis — FAIT** (2026-07-25) : `llm_confirm.summarize_passage()`, branché dans `app.py._map_result_to_display()` (pas dans `analyze.py` — seulement calculé sur les 5 cas finaux affichés, pas sur tous les voisins FAISS bruts, pour borner le coût à 5 appels max). Testé en conditions réelles via l'app Streamlit (Playwright) : résumés cohérents en une phrase à la place de l'extrait tronqué en plein milieu de phrase. Fail-open : repli sur l'ancien extrait tronqué si Ollama est injoignable.
+   - ✅ **Recommandation contextualisée — FAIT** (2026-07-25) : `llm_confirm.generate_recommendation()`, branché dans `analyze()` (fait partie de `result["recommendation"]`, persisté dans `st.session_state["last_analysis"]`). `app.py` utilise `result["recommendation"] or RECOMMENDATION_BY_GRADE[grade]` (fallback si Ollama injoignable). Testé en conditions réelles (Playwright) : cas "propre" → *"Given no specific ESG risk signals and a 0% probability of an ESG event, approve the transaction with no mitigation requirements"* ; cas "risque" → recommandation citant PS non-conformance, community opposition, consultation gaps — bien plus utile que l'ancien template unique "Vigilance — monitoring standard" par grade.
+
+**Point 3 de la feuille de route (cas d'usage LLM) intégralement terminé.**
+4. **Construire l'interface graphique définitive** — 3 des 4 fonctionnalités validées FAITES le 2026-07-25 (export, multi-documents, traçabilité), 1 reportée (multilingue) — voir section dédiée ci-dessous
 5. **Optimiser le temps de calcul**
 6. Une fois 1-5 stabilisés : **points 4-5** (résumé de document long/page par page, Pattern Library en insights narratifs générés)
 7. Nouvelle passe d'optimisation
@@ -121,14 +180,35 @@ Ordre validé par l'utilisateur :
 
 ## 🆕 Fonctionnalités validées pour l'étape 4 (interface graphique)
 
-Décidées le 2026-07-24, pas encore implémentées :
+Décidées le 2026-07-24 :
 
-| # | Fonctionnalité | Note |
+| # | Fonctionnalité | Statut |
 |---|---|---|
-| 1 | **Support multilingue** | Lié au choix du modèle d'embedding en cours (voir "Chantier ouvert") |
-| 2 | **Export du résultat** (PDF/Excel) | Pour joindre l'analyse à un mémo de comité de crédit |
-| 3 | **Upload multi-documents** | Une due diligence croise plusieurs documents (ESIA + ESAP + monitoring), pas un seul PDF |
-| 4 | **Traçabilité des preuves derrière un score** | Afficher les vrais passages historiques (voisins FAISS) qui ont influencé un flag_score — de l'explicabilité concrète depuis le retrait de SHAP |
+| 1 | **Support multilingue** | **Reporté** (2026-07-25) — était lié au choix du modèle d'embedding, mais on a fini sur mpnet (anglophone), pas sur le multilingue (écarté, voir "Chantier ouvert" résolu). Corpus quasi tout anglophone, pas jugé prioritaire pour l'instant. |
+| 2 | **Export du résultat** (PDF/Excel) | ✅ **FAIT** (2026-07-25) |
+| 3 | **Upload multi-documents** | ✅ **FAIT** (2026-07-25) |
+| 4 | **Traçabilité des preuves derrière un score** | ✅ **FAIT** (2026-07-25) |
+
+### ✅ Export PDF/Excel (2026-07-25)
+
+Nouveau module `scripts/export.py` : `build_pdf_report()` (fpdf2, nouvelle dépendance pure Python, pas de wkhtmltopdf/weasyprint) et `build_excel_report()` (openpyxl, déjà utilisé). Boutons `st.download_button` dans `app.py`, juste au-dessus de "Risk Assessment Summary" — génération à la volée à chaque rerun (pas de nouvel appel FAISS/LLM, juste mise en forme des données déjà calculées par `analyze()`, donc quasi instantané).
+- PDF : 1 page, sections Summary/Flag Scores (+ preuves)/Detected Signals/Historical Similar Cases
+- Excel : 4 feuilles (Summary, Detected Signals, Similar Cases, Evidence by Flag)
+- FRAGILE : fpdf2 core fonts (Helvetica) sont limitées à Latin-1 — `_safe()` remplace la ponctuation Unicode courante (tirets, guillemets courbes, ellipse) par un équivalent ASCII avant fallback. Piège rencontré : `pdf.set_y(-15)` pour ancrer un footer en bas de page déclenche un saut de page intempestif dans fpdf2 sur un contenu court — remplacé par un footer "en flux" (`pdf.ln()` + `cell()` sans position absolue).
+- Testé en conditions réelles (Playwright) : téléchargement PDF + Excel déclenchés depuis l'app, fichiers relus et vérifiés (contenu, Unicode correct, 4 feuilles Excel).
+
+### ✅ Upload multi-documents (2026-07-25)
+
+`st.file_uploader(..., accept_multiple_files=True)` + nouvelle fonction `_extract_multi_doc_text()` dans `app.py` : concatène le texte de plusieurs fichiers (séparateur `=== nom_fichier ===`) en un seul texte passé à `analyze()`.
+CHOIX : concaténation en un seul texte, pas une analyse séparée par document — garde `analyze()` inchangé (un seul jeu de chunks/flag_scores). Limite assumée : les signaux détectés/le surlignage ne distinguent pas de quel document ils viennent (cohérent avec le chantier "annotation page par page", déjà en pause, item B ci-dessous).
+`doc_label` devient `"N documents (a.pdf, b.pdf, ...)"` — `_safe_filename()` ajouté pour nettoyer ce genre de libellé avant de servir de nom de fichier d'export.
+Testé en conditions réelles (Playwright, 2 fichiers .txt uploadés ensemble) : les deux apparaissent dans l'uploader, l'analyse tourne sur le texte combiné, flag_scores reflètent bien le contenu des deux documents.
+
+### ✅ Traçabilité des preuves derrière un score (2026-07-25)
+
+Dans `app._map_result_to_display()` : nouveau champ `evidence_by_flag`, dérivé de `result["similar_passages"]` (les mêmes voisins FAISS que `search.get_flag_scores` a utilisés pour calculer `flag_scores` — pas de nouvel appel FAISS). Pour chaque flag, les 2 projets historiques (un passage chacun, meilleur score) dont le `flag_type` correspond, triés par score, avec résumé LLM (`summarize_passage`, déjà utilisé pour Historical Similar Cases — bénéficie du même cache).
+Affiché sous chaque barre de score dans la carte "Flag Scores" via un `<details>/<summary>` HTML repliable (pas de widget Streamlit imbriqué dans les cards en `unsafe_allow_html`, pattern déjà utilisé partout ailleurs dans `app.py`).
+Testé en conditions réelles (Playwright) : 3 blocs "Evidence behind this score" trouvés et dépliés avec succès, contenu cohérent avec les scores affichés.
 
 **Sur "faire apprendre les modèles à partir des docs fournis"** (question posée, réponse actée) :
 - Le modèle Cox **ne peut pas** apprendre automatiquement d'un document tout juste uploadé — son issue (event/time_to_event) n'est pas encore connue au moment de l'analyse. Pas de raccourci technique à ça.
@@ -147,6 +227,43 @@ Décidées le 2026-07-24, pas encore implémentées :
 | E | Incohérence sévérité (Transaction Analysis) | `SEVERITY_BY_FLAG` fixe (Flag1=high/Flag2=medium/Flag3=low), indépendant du nombre d'occurrences réel | À valider si voulu |
 | F | Modèle de survie alternatif (Random Survival Forest, Gradient Boosting) | Probablement pas pertinent avec seulement 46 projets (sur-apprentissage) | Écarté |
 | G | Fine-tuning du modèle d'embedding sur le corpus | Écarté pour l'instant, même raison que F (trop peu de données) | Écarté |
+| H | `flag_type` affiché "nan" dans Historical Similar Cases | Repéré le 2026-07-25 (test UI Playwright) sur `IFC_36402_KTDAHydro_CTRL` — un chunk sans `flag_type` (NaN pandas) remonte quand même comme voisin FAISS ; `p["flag_type"] or "—"` ne suffit pas (`float('nan')` est truthy en Python), il faut un vrai `pd.isna()` côté `app.py._map_result_to_display` | Cosmétique, pas corrigé |
+
+---
+
+## 📼 Retours réunion Elisa/Archange (2026-07-25, notes Gemini) — propositions, non implémentées
+
+Contexte : compte-rendu d'une session de démo/travail avec Elisa (associée). Calendrier arrêté : finalisation semaine du **20 août**, présentation officielle le **25 août** (repoussée depuis le 5 août). Elisa consacre 1h-1h30/jour au projet.
+
+### Déjà réglé par le travail du 2026-07-25 (avant même lecture des notes)
+
+- **Paragraphe "restauration des moyens de subsistance" flaggé à tort comme risque** — exactement le bug de polarité diagnostiqué et corrigé ce jour (voir "Filtre de polarité LLM").
+- **Proposition d'Elisa** : *"si un risque communautaire est suivi dans le paragraphe par du vocabulaire de mitigation, réduire automatiquement le poids"* — c'est l'architecture `llm_confirm.confirm_risk` construite ce jour (LLM plutôt que règle de proximité de mots-clés).
+- **"Export Excel seulement, il faudrait du PDF"** — fait ce jour (`scripts/export.py`).
+- **Confidentialité / IA externe** — déjà vrai (Ollama 100% local), à confirmer explicitement à Elisa dans la présentation puisque c'était son objection principale sur l'usage d'IA open source.
+
+### Propositions faites (2026-07-25) — PAS IMPLÉMENTÉES, à trancher avec Elisa avant de coder
+
+**Tier 1 — gains rapides, indépendants les uns des autres :**
+1. Regrouper l'affichage des signaux détectés par flag (pas par signal individuel) — corrige le "l'outil a dupliqué son alerte sur un même paragraphe" repéré par Elisa en démo (probablement toujours reproductible : chaque `signal_name` de `signals.SIGNAL_KEYWORDS` est détecté indépendamment, donc un paragraphe touchant 2 thèmes génère 2 cartes qui citent le même passage — le filtre de polarité ajouté ce jour ne déduplique pas, il ne fait que confirmer/rejeter chaque candidat séparément).
+2. Score chiffré 0-100 en complément du grade lettre (D/C/B/A) — Elisa juge le grade lettre peu explicite sur la gravité/l'échelle.
+3. Réagencer l'écran de résultat pour faire remonter Flag Scores/Signaux/Preuves au-dessus du % de probabilité — répond à "l'outil ne doit pas être qu'un prédicteur de défaut, mais un instrument d'alerte et de justification décisionnelle".
+4. Migration vers un hébergement permanent (engagement pris auprès d'Elisa en réunion — le tunnel Cloudflare mis en place ce jour est un pis-aller temporaire, pas ce qui a été promis) — à caler explicitement avant le 20 août.
+
+**Tier 2 — nécessitent une décision de design avec Elisa d'abord :**
+5. Pondération manuelle du risque ("aligner les paramètres avec le ressenti analytique") — deux options proposées : (a) garder 100% statistique (Cox apprend déjà les poids depuis l'historique), ou (b) ajouter un champ "note/justification de l'analyste" qui capture le désaccord sans toucher au modèle (option recommandée si une décision est nécessaire avant la présentation — audit trail, pas de dilution de la rigueur statistique).
+6. Grades trop souvent "D" (peu de contraste) — cause déjà connue : trop peu de projets Flag 3 dans le corpus (§4 CORRECTIONS.md). Pas un bugfix — proposition : intégrer explicitement la recherche de projets Flag 2/Flag 3 supplémentaires dans la tâche d'Elisa "analyser les 46 projets disponibles".
+
+**Tier 3 — cosmétique, non bloquant :**
+7. Nom du projet non tranché (Archange : "CBG Risk Intelligence"/"Zelenski Bini" ; Elisa : "ESG Data Room"/"Due Diligence Room").
+
+### Autres actions issues de la réunion (hors périmètre code, pour mémoire)
+
+- Elisa : valider la taxonomie sémantique (`signals.py`), tester l'outil sur 6 rapports de référence pour lister les anomalies (échéance 1er août).
+- Elisa : enquête interne aupres des analystes (entretien avec "Hugo") sur les tâches les plus fastidieuses — pour prioriser les prochaines fonctionnalités.
+- Elisa : recherche sur les critères ESG spécifiques au secteur immobilier — lien avec la réflexion stratégique ci-dessous (extension à d'autres métiers).
+- Archange : centraliser les rapports d'analyse dans un Drive partagé.
+- Positionnement produit à confirmer avec Elisa : instrument d'alerte/justification de décision (mapper les fréquences de signaux, anticiper les revues périodiques), pas un prédicteur de défaut ESG pur — cohérent avec la réflexion stratégique ci-dessous.
 
 ---
 
@@ -166,16 +283,23 @@ Recommandation : vendre la vérification de conformité par checklist comme le m
 
 ```
 cd scripts/
-python ingest.py      # chunke corpus/*.pdf et *.txt vers chunks.csv
-python annote.py      # applique flag_type (par contenu réel)/event/time_to_event depuis corpus_cao_ifc.xlsx
-python pipeline.py    # re-embed + FAISS + entraîne Cox (tout, ~3min)
-python model.py       # ré-entraîne Cox seul (réutilise embeddings/FAISS existants)
-python analyze.py     # test end-to-end du pipeline d'analyse
+python ingest.py               # chunke corpus/*.pdf et *.txt vers chunks.csv
+python annote.py               # applique flag_type (par contenu réel)/event/time_to_event depuis corpus_cao_ifc.xlsx
+python warm_llm_cache.py       # préchauffe le cache LLM sur tout le corpus — INSTABLE, voir "Chantier ouvert" avant d'utiliser sur un run long
+python pipeline.py             # re-embed + FAISS + entraîne Cox (tout, ~15-20min avec mpnet ; le Cox actuel n'est PAS ré-entraîné sur les scores filtrés LLM, voir "Chantier ouvert")
+python model.py                # ré-entraîne Cox seul (réutilise embeddings/FAISS existants)
+python analyze.py              # test end-to-end du pipeline d'analyse
+python compare_embeddings.py   # comparatif modèles d'embedding (C-index + gap risque/neutre), résultats dans models/embedding_comparison.json
+python llm_confirm.py          # auto-test du filtre de polarité (4 cas RISK/CLEAN connus)
 cd ..
 streamlit run app.py
 ```
 
+- **Ollama doit tourner** (`ollama serve`, démarré automatiquement au login sur Windows après install) pour que le filtre de polarité fonctionne — sinon fail-open silencieux (comportement pré-filtre, un seul warning affiché). Modèle utilisé : `qwen3:4b-instruct` (PAS `qwen3:4b`, voir "Filtre de polarité LLM" — le hybride est ~15-45x plus lent).
+- **Playwright installé dans `venv/`** (2026-07-25, `pip install playwright` + `playwright install chromium`) pour vérifier visuellement l'app dans un vrai navigateur headless plutôt que juste tester les fonctions Python isolément — utile vu que les changements récents (résumés/recommandation LLM) ne se voient que dans le rendu Streamlit. Pas de script de driver committé pour l'instant (tests ad hoc), à formaliser si réutilisé souvent.
+- **Piège vécu (2026-07-25)** : `streamlit run app.py` gardait un process fantôme sur le port 8501 après un run précédent (fermé sans libérer le port proprement) — les tests suivants pointaient sur l'ANCIEN code sans erreur ni avertissement, donnant l'impression qu'un correctif ne marchait pas alors qu'il n'était juste jamais exécuté. `netstat -ano | grep 8501` pour vérifier qu'un seul process écoute avant de conclure qu'un test "confirme" quoi que ce soit. Si l'app tourne déjà dans un terminal (le tien), ne pas le tuer à l'aveugle — relancer une vérification sur un autre port (`--server.port 8502`) et te laisser redémarrer le tien pour récupérer le correctif.
+- `scripts/export.py` (`build_pdf_report`/`build_excel_report`) prend `result` (sortie brute de `analyze()`) ET `display` (sortie de `app._map_result_to_display()`) — utilise les deux car `display` a déjà les résumés LLM/agrégations par projet (évite de les recalculer), mais certains champs texte y sont `html.escape()` pour Streamlit (`_unescape()` les repasse en clair pour le PDF/Excel).
 - Seuils de risk grade par défaut (`model.DEFAULT_RISK_THRESHOLDS`) : D<25% / C 25-55% / B 55-80% / A>80% de probabilité d'événement à 12 mois — surchageables depuis Settings (session uniquement).
-- `scripts/signals.py` : source unique des mots-clés de signaux (`SIGNAL_KEYWORDS`), utilisée par `analyze.py` (détection live), `annote.py` (ré-annotation du corpus) ET `app.py` (Pattern Library) — toute modification des mots-clés doit rester cohérente entre les trois usages.
+- `scripts/signals.py` : source unique des mots-clés de signaux (`SIGNAL_KEYWORDS`), utilisée par `analyze.py` (détection live), `annote.py` (ré-annotation du corpus), `app.py` (Pattern Library) ET `llm_confirm.py` (filtre de candidats) — toute modification des mots-clés doit rester cohérente entre ces usages.
 - `st.session_state` clés utilisées dans `app.py` : `last_analysis` (résultat actif affiché), `analysis_history` (liste pour Portfolio Dashboard + sidebar), `risk_thresholds`, `faiss_k` (réglages Settings).
 - `analyze(pdf_text, risk_thresholds=None, k=15)` — les deux derniers paramètres permettent à l'UI de surcharger le comportement par défaut sans redémarrer l'app.
