@@ -6,6 +6,7 @@ CA-CIB · Portfolio Management · Energy & Infrastructure Group
 import html
 import re
 import sys
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -124,14 +125,32 @@ def _map_result_to_display(result):
 
     flag_scores = {FLAG_LABELS[k]: v for k, v in result["flag_scores"].items()}
 
-    signals = [
-        {
-            "category": f"FLAG {s['source_flag']} — {s['signal'].upper()}",
-            "text":     html.escape(s["evidence_excerpt"]),
-            "severity": SEVERITY_BY_FLAG.get(s["source_flag"], "low"),
-        }
-        for s in result["detected_signals"][:8]
-    ]
+    # CHOIX: regroupé par flag plutôt qu'un item par signal individuel —
+    # repéré par Elisa en démo (2026-07-25) : un paragraphe qui touche 2
+    # thèmes du même flag (ex. "consultation" et "grievance" dans la même
+    # phrase) générait 2 cartes citant quasiment le même passage, lu comme
+    # un doublon. Les extraits sont dédupliqués (texte identique) pour la
+    # même raison.
+    signals_by_flag = defaultdict(list)
+    for s in result["detected_signals"]:
+        signals_by_flag[s["source_flag"]].append(s)
+
+    signals = []
+    for flag_num in sorted(signals_by_flag):
+        sigs = signals_by_flag[flag_num]
+        excerpts, seen = [], set()
+        for s in sigs:
+            excerpt = html.escape(s["evidence_excerpt"])
+            if excerpt not in seen:
+                seen.add(excerpt)
+                excerpts.append(excerpt)
+        signals.append({
+            "flag_label":   FLAG_LABELS[_FLAG_NUM_TO_KEY[flag_num]],
+            "severity":     SEVERITY_BY_FLAG.get(flag_num, "low"),
+            "signal_names": [s["signal"] for s in sigs],
+            "occurrences":  sum(s["occurrences"] for s in sigs),
+            "excerpts":     excerpts[:3],
+        })
 
     # Un "cas similaire" = un projet historique (agrégation des chunks par max score)
     by_project = {}
@@ -181,6 +200,11 @@ def _map_result_to_display(result):
     return {
         "risk_grade":       pred["risk_grade"],
         "risk_label":       pred["risk_label"].upper(),
+        # Score chiffré 0-100 en complément du grade lettre — Elisa juge le
+        # grade seul (D/C/B/A) peu explicite sur l'échelle/la gravité en
+        # réunion du 2026-07-25. Même mesure que probability_12m, juste
+        # présentée en entier 0-100 plutôt qu'en pourcentage.
+        "risk_score":       round(pred["probability_12m"] * 100),
         "probability_12m":  pred["probability_12m"],
         "flag_scores":      flag_scores,
         "signals":          signals,
@@ -344,6 +368,28 @@ html, body, [class*="css"] {
 .grade-B { background: var(--orange-light); color: var(--orange); }
 .grade-C { background: #fff8e1; color: #e65100; }
 .grade-D { background: var(--green-light); color: var(--green); }
+
+/* Numeric risk score (0-100), complément du grade lettre */
+.risk-score-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text);
+    width: 65px;
+    height: 65px;
+    border-radius: 8px;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+.risk-score-badge span {
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--muted);
+    margin-left: 2px;
+}
 
 /* Score bars */
 .score-row {
@@ -607,18 +653,26 @@ if page == "🔍 Transaction Analysis":
         )
 
     # ── Risk Grade Summary ───────────────────────────────
+    # CHOIX: réagencé le 2026-07-26 (retour Elisa du 25/07) — le grade et le
+    # score chiffré restent en tête comme repère visuel, mais la probabilité
+    # et la recommandation textuelle sont repoussées après Flag Scores/
+    # Detected Signals/Evidence : l'outil doit se lire comme un instrument
+    # d'alerte et de justification, pas d'abord comme un prédicteur de
+    # défaut. Voir la carte "Probability & Recommendation" plus bas.
+    grade = display["risk_grade"]
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">📊 Risk Assessment Summary</div>', unsafe_allow_html=True)
 
-    col_grade, col_info = st.columns([1, 4])
+    col_grade, col_score, col_info = st.columns([1, 1, 4])
     with col_grade:
-        grade = display["risk_grade"]
         st.markdown(f'<div class="risk-grade grade-{grade}">{grade}</div>', unsafe_allow_html=True)
+    with col_score:
+        st.markdown(
+            f'<div class="risk-score-badge">{display["risk_score"]}<span>/100</span></div>',
+            unsafe_allow_html=True,
+        )
     with col_info:
         st.markdown(f"**Risk Label:** {display['risk_label']}")
-        st.markdown(f"**Probability of ESG event in 12 months:** {display['probability_12m']:.0%}")
-        recommendation = real_result.get("recommendation") or RECOMMENDATION_BY_GRADE.get(grade, "Grade non reconnu.")
-        st.markdown(f"**Recommendation:** {recommendation}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -664,13 +718,16 @@ if page == "🔍 Transaction Analysis":
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">🚨 Detected Signals</div>', unsafe_allow_html=True)
         if display["signals"]:
-            for sig in display["signals"]:
-                css_class = f"flag-{sig['severity']}"
-                icon = "🔴" if sig["severity"] == "high" else ("🟡" if sig["severity"] == "medium" else "🔵")
+            for group in display["signals"]:
+                css_class = f"flag-{group['severity']}"
+                icon = "🔴" if group["severity"] == "high" else ("🟡" if group["severity"] == "medium" else "🔵")
+                badges = " · ".join(name.capitalize() for name in group["signal_names"])
+                excerpts_html = "".join(f'<div style="margin-top:0.3rem;">"{e}"</div>' for e in group["excerpts"])
                 st.markdown(f"""
                 <div class="flag-item {css_class}">
-                    {icon} <strong style="font-size:0.7rem;color:#999;">{sig['category']}</strong><br>
-                    {sig['text']}
+                    {icon} <strong style="font-size:0.7rem;color:#999;">{group['flag_label'].upper()} — {group['occurrences']} occurrence(s)</strong><br>
+                    <span style="font-size:0.78rem;color:#666;">{badges}</span>
+                    {excerpts_html}
                 </div>
                 """, unsafe_allow_html=True)
         else:
@@ -691,6 +748,16 @@ if page == "🔍 Transaction Analysis":
             unsafe_allow_html=True,
         )
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Probability & Recommendation ─────────────────────
+    # Placée après les preuves (Flag Scores/Detected Signals) plutôt qu'en
+    # tête d'écran, voir le commentaire sur "Risk Grade Summary" ci-dessus.
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">📈 Probability & Recommendation</div>', unsafe_allow_html=True)
+    st.markdown(f"**Probability of ESG event in 12 months:** {display['probability_12m']:.0%}")
+    recommendation = real_result.get("recommendation") or RECOMMENDATION_BY_GRADE.get(grade, "Grade non reconnu.")
+    st.markdown(f"**Recommendation:** {recommendation}")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Historical Similar Cases ─────────────────────────
     st.markdown('<div class="card">', unsafe_allow_html=True)

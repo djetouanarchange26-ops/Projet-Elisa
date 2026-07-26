@@ -1,6 +1,8 @@
 # Journal de bord — NLP ESG Risk Intelligence
 
-Dernière mise à jour : 2026-07-25 (points 3 ET 4 avancés — LLM branché, export PDF/Excel, multi-documents, traçabilité ; + retours réunion Elisa du 25/07 consignés, propositions Tier 1-3 en attente d'arbitrage, présentation calée au 25 août)
+Dernière mise à jour : 2026-07-26 (Tier 1 des retours Elisa — items 1, 2, 3 faits, voir section dédiée ; le travail du 25/07, jusqu'ici non commité, a été commité ce jour)
+
+Dernière mise à jour précédente : 2026-07-25 (points 3 ET 4 avancés — LLM branché, export PDF/Excel, multi-documents, traçabilité ; + retours réunion Elisa du 25/07 consignés, propositions Tier 1-3 en attente d'arbitrage, présentation calée au 25 août)
 
 ## État général
 
@@ -245,10 +247,10 @@ Contexte : compte-rendu d'une session de démo/travail avec Elisa (associée). C
 ### Propositions faites (2026-07-25) — PAS IMPLÉMENTÉES, à trancher avec Elisa avant de coder
 
 **Tier 1 — gains rapides, indépendants les uns des autres :**
-1. Regrouper l'affichage des signaux détectés par flag (pas par signal individuel) — corrige le "l'outil a dupliqué son alerte sur un même paragraphe" repéré par Elisa en démo (probablement toujours reproductible : chaque `signal_name` de `signals.SIGNAL_KEYWORDS` est détecté indépendamment, donc un paragraphe touchant 2 thèmes génère 2 cartes qui citent le même passage — le filtre de polarité ajouté ce jour ne déduplique pas, il ne fait que confirmer/rejeter chaque candidat séparément).
-2. Score chiffré 0-100 en complément du grade lettre (D/C/B/A) — Elisa juge le grade lettre peu explicite sur la gravité/l'échelle.
-3. Réagencer l'écran de résultat pour faire remonter Flag Scores/Signaux/Preuves au-dessus du % de probabilité — répond à "l'outil ne doit pas être qu'un prédicteur de défaut, mais un instrument d'alerte et de justification décisionnelle".
-4. Migration vers un hébergement permanent (engagement pris auprès d'Elisa en réunion — le tunnel Cloudflare mis en place ce jour est un pis-aller temporaire, pas ce qui a été promis) — à caler explicitement avant le 20 août.
+1. ✅ **FAIT (2026-07-26)** — Regrouper l'affichage des signaux détectés par flag (pas par signal individuel) — corrige le "l'outil a dupliqué son alerte sur un même paragraphe" repéré par Elisa en démo.
+2. ✅ **FAIT (2026-07-26)** — Score chiffré 0-100 en complément du grade lettre (D/C/B/A) — Elisa juge le grade lettre peu explicite sur la gravité/l'échelle.
+3. ✅ **FAIT (2026-07-26)** — Réagencer l'écran de résultat pour faire remonter Flag Scores/Signaux/Preuves au-dessus du % de probabilité — répond à "l'outil ne doit pas être qu'un prédicteur de défaut, mais un instrument d'alerte et de justification décisionnelle". Voir section dédiée ci-dessous.
+4. Migration vers un hébergement permanent (engagement pris auprès d'Elisa en réunion — le tunnel Cloudflare mis en place le 25/07 est un pis-aller temporaire, pas ce qui a été promis) — à caler explicitement avant le 20 août.
 
 **Tier 2 — nécessitent une décision de design avec Elisa d'abord :**
 5. Pondération manuelle du risque ("aligner les paramètres avec le ressenti analytique") — deux options proposées : (a) garder 100% statistique (Cox apprend déjà les poids depuis l'historique), ou (b) ajouter un champ "note/justification de l'analyste" qui capture le désaccord sans toucher au modèle (option recommandée si une décision est nécessaire avant la présentation — audit trail, pas de dilution de la rigueur statistique).
@@ -264,6 +266,20 @@ Contexte : compte-rendu d'une session de démo/travail avec Elisa (associée). C
 - Elisa : recherche sur les critères ESG spécifiques au secteur immobilier — lien avec la réflexion stratégique ci-dessous (extension à d'autres métiers).
 - Archange : centraliser les rapports d'analyse dans un Drive partagé.
 - Positionnement produit à confirmer avec Elisa : instrument d'alerte/justification de décision (mapper les fréquences de signaux, anticiper les revues périodiques), pas un prédicteur de défaut ESG pur — cohérent avec la réflexion stratégique ci-dessous.
+
+---
+
+## ✅ Tier 1 des retours Elisa — implémentation (2026-07-26)
+
+**1. Signaux regroupés par flag** (`app._map_result_to_display`) : au lieu d'une carte par `signal_name` individuel (11 catégories possibles), les signaux détectés sont regroupés par flag (1/2/3) — une seule carte par flag avec la liste des thèmes touchés (ex. "Community opposition · Displacement risk · Consultation gaps") et les extraits dédupliqués (texte identique uniquement — pas de dédup sémantique, un paragraphe reformulé différemment sur le même sujet donnera quand même 2 extraits, limite assumée). Plafonné à 3 extraits par flag pour ne pas surcharger la carte.
+
+**2. Score chiffré 0-100** : nouveau champ `display["risk_score"] = round(probability_12m * 100)` — même mesure que `probability_12m`, juste présentée en entier 0-100 à côté du badge de grade lettre plutôt qu'en pourcentage dans le texte. Ajouté aussi au résumé PDF/Excel (`scripts/export.py`) pour rester cohérent entre l'app et les exports.
+
+**3. Réagencement de l'écran** : la carte "Risk Assessment Summary" en tête d'écran ne montre plus que le Grade + le Score (repère visuel immédiat) — la probabilité en % et la recommandation textuelle sont déplacées dans une nouvelle carte "📈 Probability & Recommendation", positionnée après Flag Scores/Evidence et Detected Signals/Annotated Document, juste avant Historical Similar Cases. Nouvel ordre de l'écran : Grade+Score → Flag Scores (+ preuves) → Detected Signals + Annotated Document → Probability & Recommendation → Historical Similar Cases.
+
+Testé en conditions réelles (Playwright, cas "risque" avec les 3 flags touchés) : regroupement par flag confirmé (3 cartes au lieu de 11 signaux individuels), score "2/100" affiché à côté du grade "D", carte Probability & Recommendation bien positionnée après les preuves.
+
+⚠️ **Piège rencontré pendant le test** : `analyze._ensure_loaded()` fait un `print("⏳ Chargement des modèles...")` qui plante (`UnicodeEncodeError`/`charmap`) si le processus Streamlit a son stdout redirigé vers un fichier sans forcer l'encodage UTF-8 (`PYTHONIOENCODING=utf-8`) — spécifique à Windows quand la sortie standard n'est pas un vrai terminal. Pas un bug introduit aujourd'hui, mais à garder en tête si un lancement en arrière-plan (`streamlit run app.py > log.txt`) échoue silencieusement sur la toute première analyse : vérifier `PYTHONIOENCODING` avant de chercher ailleurs.
 
 ---
 
