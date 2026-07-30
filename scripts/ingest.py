@@ -6,6 +6,8 @@ import csv
 import os
 
 from search import chunk_text
+from chunk_metadata import extract_doc_date, classify_section_type, classify_chunk_type, compute_specificity_score
+from ifc_board_dates import IFC_BOARD_DATES
 
 BASE = Path(__file__).resolve().parent.parent
 corpus = BASE / "corpus"
@@ -49,6 +51,10 @@ for pdf_file in corpus.glob("*.pdf"):
     full_text = extract_pdf(pdf_file)
     chunks = chunk_text(full_text)
 
+    # CHANTIER 1 (PROMPT_CLAUDE_CODE_ESG_V2) : doc_date se devine au niveau
+    # DOCUMENT (une fois), pas par chunk — voir chunk_metadata.extract_doc_date.
+    doc_date = extract_doc_date(full_text, IFC_BOARD_DATES, pdf_file.name) or ""
+
     for i, chunk in enumerate(chunks):
         all_chunks.append({
             "project_id": pdf_file.name, # IFC_24408_Bujagali.pdf au lieu de IFC_24408_Bujagali
@@ -58,7 +64,10 @@ for pdf_file in corpus.glob("*.pdf"):
             "flag_type": "",
             "event": "",
             "time_to_event": "",
-            "doc_date": ""
+            "doc_date": doc_date,
+            "section_type": classify_section_type(chunk),
+            "chunk_type": classify_chunk_type(chunk),
+            "specificity_score": compute_specificity_score(chunk),
         })
 
 # Traitement des TXT
@@ -71,6 +80,8 @@ for txt_file in corpus.glob("*.txt"):
     full_text = txt_file.read_text(encoding="utf-8")
     chunks = chunk_text(full_text)
 
+    doc_date = extract_doc_date(full_text, IFC_BOARD_DATES, txt_file.name) or ""
+
     for i, chunk in enumerate(chunks):
         all_chunks.append({
             "project_id": txt_file.name, # IFC_24408_Bujagali.txt au lieu de IFC_24408_Bujagali
@@ -80,7 +91,10 @@ for txt_file in corpus.glob("*.txt"):
             "flag_type": "",
             "event": "",
             "time_to_event": "",
-            "doc_date": ""
+            "doc_date": doc_date,
+            "section_type": classify_section_type(chunk),
+            "chunk_type": classify_chunk_type(chunk),
+            "specificity_score": compute_specificity_score(chunk),
         })
 
 # Sauvegarde — append si le fichier existe déjà, sinon création
