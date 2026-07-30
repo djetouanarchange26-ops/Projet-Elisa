@@ -1,6 +1,8 @@
 # Journal de bord — NLP ESG Risk Intelligence
 
-Dernière mise à jour : 2026-07-26 (Tier 1 des retours Elisa — items 1, 2, 3 faits, voir section dédiée ; le travail du 25/07, jusqu'ici non commité, a été commité ce jour)
+Dernière mise à jour : 2026-07-31 (PROMPT_CLAUDE_CODE_ESG_V2 — Chantier 1 (métadonnées chunks) et Chantier 2 (re-ranker cross-encoder) faits et commités, voir sections dédiées)
+
+Dernière mise à jour précédente : 2026-07-26 (Tier 1 des retours Elisa — items 1, 2, 3 faits, voir section dédiée ; le travail du 25/07, jusqu'ici non commité, a été commité ce jour)
 
 Dernière mise à jour précédente : 2026-07-25 (points 3 ET 4 avancés — LLM branché, export PDF/Excel, multi-documents, traçabilité ; + retours réunion Elisa du 25/07 consignés, propositions Tier 1-3 en attente d'arbitrage, présentation calée au 25 août)
 
@@ -22,6 +24,26 @@ Dernière mise à jour précédente : 2026-07-25 (points 3 ET 4 avancés — LLM
   - **Portfolio Dashboard** : historique des analyses de la session (`st.session_state`)
   - **Pattern Library** : fréquences et temps moyens réels calculés depuis le corpus
   - **Settings** : seuils de risk grade et k FAISS réellement fonctionnels, stats corpus en direct
+
+---
+
+## ✅ PROMPT_CLAUDE_CODE_ESG_V2 — Chantier 1 (métadonnées chunks) et Chantier 2 (re-ranker) (2026-07-31)
+
+Suite à `AUDIT_ESG.md` (audit complet du codebase) et `PROMPT_CLAUDE_CODE_ESG_V2.md` (plan d'amélioration "MVP Impact", 8 chantiers). Chantier 0 (enrichissement du corpus CAO/IFC) mis en pause à la demande de l'utilisateur — `scrape_cao.py`/`scrape_ifc.py` écrits et validés (vrais téléchargements réussis) mais non commités, aucun run massif lancé.
+
+**Chantier 1 — Métadonnées enrichies des chunks** (commit `ca233b7`) :
+- Nouveau `scripts/chunk_metadata.py` : `extract_doc_date` (regex + repli sur `ifc_board_dates.py`), `classify_section_type` (environmental/social/governance/general, mots-clés pondérés à partir de `signals.py`), `classify_chunk_type` (metric/commitment/incident/narrative, regex), `compute_specificity_score` (0-1, ratio marqueurs concrets/hedging words).
+- `scripts/ingest.py` peuple ces champs pour les nouveaux documents. `search.chunk_text()` **non modifié** (cohérence train/serve préservée, comme l'exigeait le prompt).
+- `scripts/backfill_chunk_metadata.py` : rétro-rempli les 4203 chunks existants. 100% ont désormais un `doc_date`, répartition section_type cohérente (environmental 1472, general 1426, social 988, governance 317), specificity_score moyen 0.70.
+- `test.py --unit` : 15/15 toujours au vert après le changement de schéma.
+
+**Chantier 2 — Re-ranker cross-encoder post-FAISS** :
+- Nouveau `scripts/reranker.py` : `cross-encoder/ms-marco-MiniLM-L-6-v2`, score composite (0.5×cross-encoder + 0.2×specificity + 0.2×récence + 0.1×boost chunk_type), normalisation **min-max par lot** (pas une sigmoïde fixe — les logits bruts du cross-encoder varient de -9 à +5.6 selon la requête, une sigmoïde les écraserait tous près de 0 et rendrait le poids cross-encoder inopérant).
+- Nouveau `scripts/config.py` : feature flags par variable d'environnement (`ESG_RERANKER_ENABLED`, etc.) — désactivation = repli exact sur le comportement pré-Chantier 2.
+- Branché dans `search.py` (`search_similar_from_chunks`, `get_flag_scores_from_chunks`) : pool FAISS élargi à 30 candidats quand actif, re-ranké, puis réduit à `k`.
+- Validé : le passage analytiquement pertinent remonte en tête même sans le meilleur score FAISS brut (testé sur un cas réel community/fishing complaint vs. passages hors-sujet). `analyze()` en usage réel (modèles déjà chargés) : **3.6s**, acceptable pour la démo.
+
+⚠️ **Nouveau constat de perf** : `get_flag_scores_from_chunks` est aussi appelée par `model.build_training_data` (entraînement Cox, tourne sur les 4203 chunks du corpus entier) — y ajouter un appel cross-encoder par chunk rend `test.py` (tests d'intégration, qui construisent l'explainer SHAP) nettement plus lent qu'avant ce chantier. Même catégorie de problème que le goulot d'étranglement `llm_confirm` déjà documenté ci-dessous ("Chantier ouvert — préchauffage du cache LLM") : acceptable en inférence live (une poignée de chunks par document), pas encore mesuré/optimisé pour un ré-entraînement complet (`pipeline.py`). À garder en tête pour le Chantier 5 (train/serve) — envisager de désactiver le re-ranker pendant `build_training_data` (feature flag déjà en place, `ESG_RERANKER_ENABLED=0`) si le ré-entraînement devient trop lent en pratique.
 
 ---
 
