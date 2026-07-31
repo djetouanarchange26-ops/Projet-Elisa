@@ -16,6 +16,7 @@ from collections import defaultdict
 
 import search
 import llm_confirm
+import deep_analysis
 from model import load_cox_model
 from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS as _SIGNAL_PATTERNS
 
@@ -113,7 +114,7 @@ def _find_signals_in_document(pdf_text, context_chars=120, llm_confirm_enabled=T
 # FONCTION PRINCIPALE
 # ============================================================================
 
-def analyze(pdf_text, risk_thresholds=None, k=15):
+def analyze(pdf_text, risk_thresholds=None, k=15, document_label="Document analysé"):
     """
     Pipeline complète : texte brut → résultat d'analyse ESG.
 
@@ -124,6 +125,9 @@ def analyze(pdf_text, risk_thresholds=None, k=15):
       k               : nombre de voisins FAISS interrogés par chunk (voir
                         search.get_flag_scores/search_similar) — réglable
                         depuis l'UI (Settings).
+      document_label  : nom du projet/document affiché dans la synthèse
+                        Pass 3 du pipeline LLM multi-pass (Chantier 3) —
+                        optionnel, app.py ne le passe pas encore (Chantier 4).
 
     Retourne :
       {
@@ -133,6 +137,13 @@ def analyze(pdf_text, risk_thresholds=None, k=15):
         "detected_signals":   [{"signal": ..., "confidence": ..., ...}, ...],
         "signal_spans":       [(start, end, flag_num), ...],
         "recommendation":     "Escalate given confirmed community opposition..." | None,
+        "deep_analysis":      {"enabled": bool, "pass1_findings": [...],
+                                "omissions": [...] | None, "synthesis": str | None,
+                                "project_type": str | None} — voir deep_analysis.py
+                                (Chantier 3). "enabled": False ou champs à None
+                                si config.DEEP_ANALYSIS_ENABLED est désactivé ou
+                                qu'Ollama est injoignable (fail-open, jamais
+                                d'exception propagée jusqu'ici).
         "processing_time_s":  12.3,
       }
     """
@@ -167,6 +178,18 @@ def analyze(pdf_text, risk_thresholds=None, k=15):
         prediction["risk_grade"], prediction["probability_12m"], detected_signals,
     )
 
+    # --- Étape 6 : Pipeline d'analyse LLM multi-pass (CHANTIER 3) ---
+    # CHOIX: après la prédiction/les signaux — la Pass 3 (synthèse) en a
+    # besoin. Ne lève jamais d'exception (cf. deep_analysis.run_deep_analysis) :
+    # dégradé gracieusement à {"enabled": False, ...} si désactivé, ou à des
+    # champs None/[] passe par passe si Ollama est injoignable en cours de
+    # route — le reste du résultat (flag_scores, recommendation...) reste
+    # valide dans tous les cas.
+    deep = deep_analysis.run_deep_analysis(
+        pdf_text, document_label, prediction["risk_grade"], prediction["probability_12m"],
+        detected_signals,
+    )
+
     return {
         "flag_scores":       flag_scores,
         "prediction":        prediction,
@@ -174,6 +197,7 @@ def analyze(pdf_text, risk_thresholds=None, k=15):
         "detected_signals":  detected_signals,
         "signal_spans":      signal_spans,
         "recommendation":    recommendation,
+        "deep_analysis":     deep,
         "processing_time_s": round(time.time() - t_start, 2),
     }
 
