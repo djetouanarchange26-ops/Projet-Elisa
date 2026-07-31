@@ -206,6 +206,7 @@ _CRITICAL_TOPICS = [
     "Consultation des parties prenantes",
     "Mécanisme de plainte et recours",
 ]
+N_CRITICAL_TOPICS = len(_CRITICAL_TOPICS)  # exposé pour app.py (score d'omission du radar chart, Chantier 4)
 
 _SECTION_LABELS_FR = {
     "environmental": "Environnement (émissions, biodiversité, eau, déchets, pollution)",
@@ -266,9 +267,10 @@ def run_pass2(chunks, project_type):
     réutilisé ici en lecture seule pour construire le prompt — n'affecte pas
     le chunking/scoring FAISS, cf. la mise en garde de chunk_metadata.py).
 
-    Retourne une liste de sujets manquants (peut être vide si tout est
-    couvert, ou si la passe échoue — indiscernable ici volontairement,
-    cf. run_deep_analysis pour comment l'appelant distingue les deux)."""
+    Retourne une liste de sujets manquants — au plus N_CRITICAL_TOPICS (6),
+    toujours des libellés exacts de _CRITICAL_TOPICS, jamais du texte libre
+    du modèle (cf. FRAGILE ci-dessous). Vide si tout est couvert. `None` si
+    la passe échoue (Ollama injoignable) — distinct de [] confirmé."""
     section_types = {classify_section_type(c) for c in chunks} - {"general"}
     themes = "\n".join(f"- {_SECTION_LABELS_FR.get(s, s)}" for s in sorted(section_types))
     if not themes:
@@ -280,9 +282,41 @@ def run_pass2(chunks, project_type):
     if response is None:
         return None  # échec de la passe — distinct de [] ("AUCUNE OMISSION" confirmée)
 
-    lines = [l.strip("- ").strip() for l in response.splitlines() if l.strip()]
-    lines = [l for l in lines if l and "aucune omission" not in l.lower()]
-    return lines
+    # FRAGILE: un 4B ne respecte pas toujours "un sujet par ligne, rien
+    # d'autre" — mesuré : jusqu'à 29 lignes en réponse pour 6 sujets
+    # possibles. Structure observée : le modèle rappelle d'abord la liste
+    # complète des 6 sujets (écho du prompt), raisonne à voix haute sur ce
+    # qui est couvert ou non, puis répète 2-3 fois une liste affinée avant
+    # de conclure. La DERNIÈRE répétition est systématiquement la plus
+    # propre (mesuré : 3 répétitions identiques du bon sous-ensemble, la
+    # toute première étant le rappel complet à ignorer). On découpe donc la
+    # réponse en blocs (séparés par une ligne vide) et on ne garde QUE le
+    # dernier bloc qui matche au moins un sujet connu — pas toute la
+    # réponse — pour éviter de compter le rappel de la liste complète comme
+    # des omissions.
+    blocks = [b for b in response.split("\n\n") if b.strip()]
+    last_matching_topics = []
+    for block in blocks:
+        topics = _topics_matched_in_block(block)
+        if topics:
+            last_matching_topics = topics
+    return last_matching_topics
+
+
+def _topics_matched_in_block(block):
+    """Sujets canoniques de _CRITICAL_TOPICS (dédupliqués, ordre d'apparition)
+    matchés par les lignes de `block` — correspondance souple (sous-chaîne
+    dans un sens ou l'autre, insensible à la casse), jamais une ligne de
+    prose arbitraire acceptée telle quelle comme sujet."""
+    found = []
+    for line in block.splitlines():
+        line_clean = line.strip("-•* ").strip().lower()
+        if not line_clean:
+            continue
+        for topic in _CRITICAL_TOPICS:
+            if topic not in found and (topic.lower() in line_clean or line_clean in topic.lower()):
+                found.append(topic)
+    return found
 
 
 # ============================================================================

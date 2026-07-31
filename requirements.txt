@@ -13,3 +13,4 @@ openpyxl
 pillow
 requests
 fpdf2
+plotly

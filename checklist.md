@@ -1,6 +1,6 @@
 # Journal de bord — NLP ESG Risk Intelligence
 
-Dernière mise à jour : 2026-07-31 (PROMPT_CLAUDE_CODE_ESG_V2 — Chantier 1 (métadonnées chunks) et Chantier 2 (re-ranker cross-encoder) faits et commités, voir sections dédiées)
+Dernière mise à jour : 2026-07-31 (PROMPT_CLAUDE_CODE_ESG_V2 — Chantiers 1 à 4 faits et commités : métadonnées chunks, re-ranker cross-encoder, pipeline LLM multi-pass, refonte UI Streamlit — voir sections dédiées)
 
 Dernière mise à jour précédente : 2026-07-26 (Tier 1 des retours Elisa — items 1, 2, 3 faits, voir section dédiée ; le travail du 25/07, jusqu'ici non commité, a été commité ce jour)
 
@@ -55,6 +55,18 @@ Nouveau `scripts/deep_analysis.py` — Pass 1 (extraction chunk par chunk : enga
 - Validé sur un cas réel (accident du travail lors d'un montage d'échafaudage, sans mot-clé `signals.py` correspondant) : Pass 1 a correctement identifié l'incident là où le système de signaux par mots-clés existant ne l'aurait pas forcément capté — première preuve concrète de valeur ajoutée d'une vraie analyse LLM par rapport au matching de similarité (le problème de fond identifié dans `AUDIT_ESG.md`).
 
 ⚠️ **Coût de perf mesuré** : `analyze()` sur un document inédit (jamais mis en cache), modèles déjà chargés — **~60s** (3 nouveaux appels LLM minimum : Pass 1 ×nb chunks jusqu'à `MAX_CHUNKS_PASS1`=20, Pass 2 ×1, Pass 3 ×1 — en plus des appels `llm_confirm` déjà existants pour `flag_scores`/`detected_signals`). Nettement au-dessus des ~3.6s mesurés après le Chantier 2 seul. Cohérent avec la latence par appel déjà documentée pour `qwen3:4b-instruct` (~2-4s "à chaud") multipliée par le nombre d'appels cumulés sur un même document. Accepté pour l'instant (MVP démo, pas de budget de latence strict fixé par le prompt pour ce chantier, contrairement au Chantier 2) — à surveiller si un document plus long (plusieurs dizaines de chunks) pousse Pass 1 vers son plafond `MAX_CHUNKS_PASS1`.
+
+⚠️ **Bug trouvé et corrigé en testant dans l'app réelle (2026-07-31)** : `run_pass2` (détection d'omissions) comptait chaque ligne non-vide de la réponse LLM comme une omission distincte, sans dédupliquer ni filtrer. Un 4B ne respecte pas toujours "un sujet par ligne, rien d'autre" — mesuré : jusqu'à **29 lignes en réponse pour 6 sujets possibles** (le modèle rappelle d'abord la liste complète des 6 sujets en écho du prompt, raisonne à voix haute, puis répète 2-3 fois une liste affinée avant de conclure). Résultat avant correction : 22 "omissions" comptées au lieu de 4 réelles, visible dans la colonne Portfolio Dashboard du Chantier 4. **Correction** : la réponse est découpée en blocs (séparés par ligne vide), seul le DERNIER bloc contenant au moins un sujet reconnu est retenu (mesuré : c'est systématiquement la répétition la plus propre), et chaque ligne n'est acceptée que si elle correspond à un des 6 sujets canoniques (`_CRITICAL_TOPICS`), jamais du texte libre. Validé après correction (même réponse en cache, sans re-solliciter Ollama) : 4 omissions correctes, la "consultation des parties prenantes" et le "mécanisme de plainte" exclus à raison (le modèle avait explicitement raisonné qu'ils étaient couverts).
+
+## ✅ Chantier 4 — Refonte de l'affichage Streamlit (2026-07-31)
+
+Nouvelles cartes dans Transaction Analysis, dans l'ordre demandé par le prompt V2 (avant tout score/grade) : 🧠 **Deep Analysis** (synthèse Pass 3 en langage naturel), 📋 **Findings** (tableau structuré Pass 1 + Pass 2, sévérité colorée, extraits source dépliables), 📐 **Document Specificity** (jauge, moyenne des `specificity_score` du document analysé comparée à la moyenne du corpus), 🕸️ **ESG Radar** (5 axes : 3 flag scores + spécificité + couverture ESG, plotly `Scatterpolar`, palette CA-CIB existante). La section "Evidence behind this score" (Flag Scores) affiche désormais `chunk_type`/`specificity_score` à côté de chaque passage cité — déjà portés par les candidats re-rankés du Chantier 2, aucun nouveau calcul. Portfolio Dashboard : colonnes Spécificité/Findings/Omissions ajoutées à la vue comparative, triables nativement (`st.dataframe`).
+
+Nouvelle dépendance `plotly` (requirements.txt) — uniquement pour le radar chart, `st.plotly_chart` s'intègre nativement à Streamlit.
+
+Testé en conditions réelles (Playwright, headless Chromium, `chromium-cli` indisponible sur cette machine → script Playwright direct) : app lancée sur le port 8502 (8501 potentiellement occupé, cf. piège déjà documenté plus bas), texte collé analysé de bout en bout, toutes les nouvelles cartes vérifiées visuellement (captures d'écran), 0 erreur console. `test.py --unit` 15/15 après les changements.
+
+⚠️ **Piège rencontré en testant** : après avoir corrigé un bug dans `deep_analysis.py` (voir ci-dessus), le serveur Streamlit déjà lancé continuait de servir l'ANCIEN code — `import deep_analysis` n'est pas re-exécuté par le rechargement à chaud de Streamlit pour un module importé indirectement. Redémarrer le process Streamlit après toute modification d'un fichier dans `scripts/` (pas seulement `app.py`) avant de re-tester, sous peine de valider un correctif qui n'est en réalité jamais exécuté (même piège que celui déjà documenté plus bas sur le port 8501 fantôme).
 
 ---
 

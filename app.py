@@ -13,11 +13,15 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import pdfplumber
+import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
 from analyze import analyze
 from model import DEFAULT_RISK_THRESHOLDS
 from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS
+from deep_analysis import N_CRITICAL_TOPICS
+import search
+import chunk_metadata
 import llm_confirm
 import export
 
@@ -193,6 +197,12 @@ def _map_result_to_display(result):
                 "name":    p["project_name"],
                 "score":   round(p["score"] * 100),
                 "excerpt": html.escape(llm_confirm.summarize_passage(p["text"])),
+                # CHANTIER 4 (V2) : chunk_type/specificity_score viennent du
+                # Chantier 1 (chunk_metadata.py), déjà portés par les candidats
+                # re-rankés (search._gather_candidates, Chantier 2) — aucun
+                # nouveau calcul ici, juste affichés en plus de l'extrait.
+                "chunk_type":        p.get("chunk_type"),
+                "specificity_score": p.get("specificity_score"),
             }
             for p in top
         ]
@@ -214,6 +224,127 @@ def _map_result_to_display(result):
 
 
 _FLAG_NUM_TO_KEY = {1: "flag1_community", 2: "flag2_pollution", 3: "flag3_compliance"}
+
+
+# ============================================================================
+# CHANTIER 4 (PROMPT_CLAUDE_CODE_ESG_V2) — Deep Analysis / Findings / Radar
+# ============================================================================
+
+def _build_findings_table(deep, doc_chunks):
+    """Combine Pass 1 (par chunk) et Pass 2 (omissions, deep_analysis.py —
+    Chantier 3) en une liste de findings structurés pour le tableau de la
+    page Transaction Analysis. `doc_chunks` sert à retrouver le texte source
+    d'un finding Pass 1 par chunk_index, pour l'aperçu du chunk source."""
+    rows = []
+    for f in deep.get("pass1_findings", []):
+        idx = f.get("chunk_index")
+        source_label = f"Chunk {idx + 1}" if idx is not None else "—"
+        source_text = doc_chunks[idx] if idx is not None and idx < len(doc_chunks) else None
+
+        incident = f.get("incident") or {}
+        if incident.get("present"):
+            rows.append({"type": "Incident", "finding": incident.get("description") or "(non précisé)",
+                          "severity": "high", "source_label": source_label, "source_text": source_text})
+
+        evasif = f.get("evasif") or {}
+        if evasif.get("present"):
+            rows.append({"type": "Évasif", "finding": evasif.get("description") or "(non précisé)",
+                          "severity": "medium", "source_label": source_label, "source_text": source_text})
+
+        engagement = f.get("engagement") or {}
+        if engagement.get("present") and not engagement.get("cible"):
+            rows.append({"type": "Engagement", "finding": engagement.get("description") or "(non précisé)",
+                          "severity": "medium", "source_label": source_label, "source_text": source_text})
+
+    for omission in (deep.get("omissions") or []):
+        rows.append({"type": "Omission", "finding": omission, "severity": "high",
+                      "source_label": "(absent)", "source_text": None})
+
+    return rows
+
+
+def _compute_document_specificity(doc_chunks):
+    """Moyenne de specificity_score (chunk_metadata.py, Chantier 1) sur les
+    chunks du DOCUMENT ANALYSÉ — pas le corpus. Signal de greenwashing :
+    un rapport plein de chunks vagues score bas. None si texte trop court
+    (aucun chunk)."""
+    if not doc_chunks:
+        return None
+    scores = [chunk_metadata.compute_specificity_score(c) for c in doc_chunks]
+    return sum(scores) / len(scores)
+
+
+@st.cache_data(show_spinner=False)
+def _corpus_avg_specificity():
+    """Moyenne de specificity_score sur tout le corpus (chunks.csv) — sert
+    de référence ("moyenne du corpus") pour comparer le document analysé.
+    None si la colonne n'existe pas (corpus pas encore backfillé, cf.
+    scripts/backfill_chunk_metadata.py)."""
+    if not CHUNKS_PATH.exists():
+        return None
+    df = pd.read_csv(CHUNKS_PATH)
+    if "specificity_score" not in df.columns:
+        return None
+    return float(df["specificity_score"].mean())
+
+
+def _compute_omission_score(omissions):
+    """Score 0-100, inverse du nombre de sujets ESG critiques manquants
+    (deep_analysis.N_CRITICAL_TOPICS = 6) — None si la Pass 2 a échoué ou
+    est désactivée (distinct de [] = 0 omission confirmée)."""
+    if omissions is None:
+        return None
+    return round(max(0, 100 - (len(omissions) / N_CRITICAL_TOPICS) * 100))
+
+
+def _build_radar_chart(flag_scores_raw, specificity_pct, omission_score):
+    """Radar ESG 5 axes (3 flag scores + spécificité + couverture ESG) —
+    une seule série (le document analysé), pas de légende nécessaire (le
+    titre de la carte identifie déjà la série). `specificity_pct`/
+    `omission_score` retombent à 50 (neutre) si non calculables, plutôt que
+    de fausser la forme du polygone avec un 0 qui suggérerait à tort "pire
+    du possible"."""
+    categories = [
+        "Community<br>Risk", "Pollution<br>Risk", "Compliance<br>Risk",
+        "Spécificité<br>du rapport", "Couverture<br>ESG",
+    ]
+    values = [
+        flag_scores_raw["flag1_community"],
+        flag_scores_raw["flag2_pollution"],
+        flag_scores_raw["flag3_compliance"],
+        round(specificity_pct) if specificity_pct is not None else 50,
+        omission_score if omission_score is not None else 50,
+    ]
+    values_closed = values + values[:1]
+    categories_closed = categories + categories[:1]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values_closed,
+        theta=categories_closed,
+        fill="toself",
+        fillcolor="rgba(0,155,157,0.25)",
+        line=dict(color="#009B9D", width=2),
+        marker=dict(size=6, color="#009B9D"),
+        text=[str(v) for v in values_closed],
+        textposition="top center",
+        mode="lines+markers+text",
+        hovertemplate="%{theta}: %{r}/100<extra></extra>",
+    ))
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100], tickvals=[0, 25, 50, 75, 100],
+                             gridcolor="#e0e0e0", linecolor="#e0e0e0"),
+            angularaxis=dict(gridcolor="#e0e0e0"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        showlegend=False,
+        margin=dict(l=50, r=50, t=30, b=30),
+        height=360,
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="IBM Plex Sans, sans-serif", size=11, color="#333"),
+    )
+    return fig
 
 
 @st.cache_data(show_spinner="Chargement des patterns...")
@@ -581,18 +712,31 @@ if page == "🔍 Transaction Analysis":
                         # depuis Settings (paramètre technique, pas pertinent pour l'analyste
                         # métier) — valeur validée par défaut, voir checklist.md.
                         k=15,
+                        document_label=doc_label,
                     )
                     display_result = _map_result_to_display(result)
+
+                    # CHANTIER 4 (V2) : chunks du DOCUMENT ANALYSÉ (pas le
+                    # corpus) — pour la spécificité du document et l'aperçu
+                    # de chunk source dans le tableau de findings. Même
+                    # chunk_text() que search.py/deep_analysis.py (cohérence),
+                    # mais ici c'est un simple calcul d'affichage, pas
+                    # d'embedding/scoring — aucun risque de décalage train/serve.
+                    doc_chunks = search.chunk_text(extracted_text) or [extracted_text]
+                    doc_specificity = _compute_document_specificity(doc_chunks)
+                    findings_table = _build_findings_table(result["deep_analysis"], doc_chunks)
 
                     # Résultat "actif" affiché ci-dessous — persiste tant que
                     # l'analyste ne relance pas une analyse ou ne change pas
                     # d'onglet et ne revient pas (sinon les résultats
                     # disparaissaient au moindre autre clic sur la page).
                     st.session_state["last_analysis"] = {
-                        "result":         result,
-                        "display":        display_result,
-                        "extracted_text": extracted_text,
-                        "document":       doc_label,
+                        "result":          result,
+                        "display":         display_result,
+                        "extracted_text":  extracted_text,
+                        "document":        doc_label,
+                        "doc_specificity": doc_specificity,
+                        "findings_table":  findings_table,
                     }
                     # Historique de session pour Portfolio Dashboard.
                     st.session_state.setdefault("analysis_history", []).append({
@@ -605,6 +749,10 @@ if page == "🔍 Transaction Analysis":
                         # pas display_result["flag_scores"] (clés déjà traduites en libellé humain "Community
                         # & Stakeholder Risk...") — sinon FLAG_LABELS[...] plante plus loin (Portfolio Dashboard).
                         "dominant_flag":   max(result["flag_scores"], key=result["flag_scores"].get),
+                        # CHANTIER 4 (V2) : pour la vue comparative Portfolio Dashboard.
+                        "doc_specificity": doc_specificity,
+                        "n_findings":      len(findings_table),
+                        "n_omissions":     len(result["deep_analysis"].get("omissions") or []),
                     })
                 except Exception as e:
                     analyze_error = str(e)
@@ -628,6 +776,8 @@ if page == "🔍 Transaction Analysis":
     extracted_text = active["extracted_text"]
     display = active["display"]
     doc_label = active["document"]
+    doc_specificity = active.get("doc_specificity")   # CHANTIER 4 (V2)
+    findings_table = active.get("findings_table", [])  # CHANTIER 4 (V2)
 
     # ── Export — joindre le résultat à un mémo de comité de crédit ──
     # CHOIX: généré à chaque rerun (pas de bouton "Generate" séparé) — la
@@ -651,6 +801,89 @@ if page == "🔍 Transaction Analysis":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+
+    # ── Deep Analysis (CHANTIER 4 / V2) ──────────────────────────
+    # Placée EN PREMIER, avant tout score/grade — cf. prompt V2 Chantier 4 :
+    # "C'est la première chose que le banquier doit lire : pas un score,
+    # pas un grade, mais une analyse en langage naturel qui dit ce qui ne
+    # va pas et pourquoi."
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">🧠 Deep Analysis</div>', unsafe_allow_html=True)
+    deep = real_result.get("deep_analysis", {})
+    if deep.get("synthesis"):
+        st.markdown(
+            f'<div style="font-size:0.95rem;line-height:1.65;">{html.escape(deep["synthesis"])}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption(
+            "Analyse LLM approfondie indisponible pour cette analyse (Ollama injoignable, "
+            "fonctionnalité désactivée, ou réponse non exploitable pour un modèle 4B) — "
+            "les scores et signaux ci-dessous restent valides (fail-open, voir deep_analysis.py)."
+        )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Findings Table (Pass 1 + Pass 2, CHANTIER 4 / V2) ────────
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">📋 Findings</div>', unsafe_allow_html=True)
+    if findings_table:
+        _sev_icon = {"high": "🔴", "medium": "🟡", "low": "🔵"}
+        findings_df = pd.DataFrame([
+            {
+                "Type":     f["type"],
+                "Finding":  f["finding"],
+                "Sévérité": f"{_sev_icon.get(f['severity'], '')} {f['severity'].upper()}",
+                "Source":   f["source_label"],
+            }
+            for f in findings_table
+        ])
+        st.dataframe(findings_df, use_container_width=True, hide_index=True)
+
+        _sourced = [f for f in findings_table if f["source_text"]]
+        if _sourced:
+            with st.expander(f"Voir les extraits source ({len(_sourced)})"):
+                for f in _sourced:
+                    st.markdown(f"**{f['type']} — {f['source_label']}**")
+                    st.caption(f["source_text"][:500])
+    else:
+        st.caption("Aucun finding structuré détecté par le pipeline LLM multi-pass sur ce document.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Document Specificity + ESG Radar (CHANTIER 4 / V2) ───────
+    col_spec, col_radar = st.columns([1, 1])
+    with col_spec:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">📐 Document Specificity</div>', unsafe_allow_html=True)
+        if doc_specificity is not None:
+            spec_pct = round(doc_specificity * 100)
+            corpus_avg = _corpus_avg_specificity()
+            comparison = ""
+            if corpus_avg is not None:
+                corpus_pct = round(corpus_avg * 100)
+                comparison = (f" — {'EN DESSOUS' if spec_pct < corpus_pct else 'AU-DESSUS'} "
+                              f"de la moyenne du corpus ({corpus_pct}%)")
+            spec_color = "#ED1C24" if spec_pct < 35 else ("#f59e0b" if spec_pct < 60 else "#006F4E")
+            st.markdown(f"""
+            <div class="score-row">
+                <div class="score-bg" style="height:14px;"><div class="score-fill" style="width:{spec_pct}%;background:{spec_color};height:14px;"></div></div>
+                <div class="score-num" style="width:auto;font-size:1rem;color:{spec_color};">{spec_pct}%</div>
+            </div>
+            <div style="font-size:0.78rem;color:#666;margin-top:0.3rem;">Niveau de précision du rapport{comparison}</div>
+            """, unsafe_allow_html=True)
+            if spec_pct < 40:
+                st.caption("⚠️ Rapport majoritairement composé de formulations vagues/évasives — signal de greenwashing potentiel.")
+        else:
+            st.caption("Texte trop court pour calculer un score de spécificité.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col_radar:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">🕸️ ESG Radar</div>', unsafe_allow_html=True)
+        _specificity_pct = round(doc_specificity * 100) if doc_specificity is not None else None
+        _omission_score = _compute_omission_score(deep.get("omissions"))
+        radar_fig = _build_radar_chart(real_result["flag_scores"], _specificity_pct, _omission_score)
+        st.plotly_chart(radar_fig, use_container_width=True, config={"displayModeBar": False})
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Risk Grade Summary ───────────────────────────────
     # CHOIX: réagencé le 2026-07-26 (retour Elisa du 25/07) — le grade et le
@@ -697,9 +930,18 @@ if page == "🔍 Transaction Analysis":
         # d'appel FAISS supplémentaire.
         evidence = display["evidence_by_flag"].get(label, [])
         if evidence:
+            # CHANTIER 4 (V2) : chunk_type/specificity_score (Chantier 1)
+            # affichés à côté de chaque passage cité, au lieu des seuls
+            # résultats FAISS bruts (specificity_score déjà calculé côté
+            # corpus par backfill_chunk_metadata.py, pas recalculé ici).
             items = "".join(
                 f'<div style="margin:0.15rem 0 0.15rem 1rem;font-size:0.78rem;color:#666;">'
-                f'&#8226; <strong>{e["name"]}</strong> ({e["score"]}%) — <em>{e["excerpt"]}</em></div>'
+                f'&#8226; <strong>{e["name"]}</strong> ({e["score"]}%)'
+                + (f' <span style="color:#999;">[{e["chunk_type"]}'
+                   + (f', spéc. {round(float(e["specificity_score"]) * 100)}%'
+                      if e.get("specificity_score") is not None and str(e["specificity_score"]) != "nan" else "")
+                   + ']</span>' if e.get("chunk_type") and str(e["chunk_type"]) != "nan" else "")
+                + f' — <em>{e["excerpt"]}</em></div>'
                 for e in evidence
             )
             st.markdown(
@@ -801,6 +1043,12 @@ elif page == "📊 Portfolio Dashboard":
                 "Risk Label":    h["risk_label"],
                 "P(event 12m)":  f"{h['probability_12m']:.0%}",
                 "Dominant Flag": FLAG_LABELS[h["dominant_flag"]].replace(" Risk", ""),
+                # CHANTIER 4 (V2) : vue comparative — le banquier voit
+                # immédiatement quels projets méritent une attention accrue
+                # (rapport vague + beaucoup de findings/omissions).
+                "Spécificité":   f"{round(h['doc_specificity'] * 100)}%" if h.get("doc_specificity") is not None else "—",
+                "Findings":      h.get("n_findings", 0),
+                "Omissions":     h.get("n_omissions", 0),
                 "Analyzed At":   h["timestamp"].strftime("%Y-%m-%d %H:%M"),
             }
             for h in reversed(history)
