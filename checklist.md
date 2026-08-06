@@ -65,6 +65,8 @@ Accès direct sans authentification jugé insuffisant dès qu'un document réel 
 
 ⚠️ **Limite assumée** : authentification unique partagée (2 comptes, même mot de passe), pas de vrai système multi-utilisateurs — suffisant pour un accès Stacy/Elisa/utilisateur, pas conçu pour scaler à plus de monde. Transport toujours en HTTP (pas de chiffrement) tant que le domaine/AAAA n'est pas réglé — mot de passe et documents uploadés circulent en clair sur le réseau.
 
+**Vérifié en conditions réelles** : `docker compose up -d` sur le VPS confirme `esg-app` sans port publié (seulement joignable par Caddy en interne), `esg-caddy` publie 80/443. Popup de connexion navigateur native déclenchée sur `http://187.124.209.94`, connexion réussie avec les identifiants `zelensky`/`boudini`.
+
 ---
 
 ## ✅ Audit perf — cause réelle des 20-30 min sur un rapport de 45-70 pages (2026-08-06)
