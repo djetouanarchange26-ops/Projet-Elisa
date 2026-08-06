@@ -1,6 +1,8 @@
 # Journal de bord — NLP ESG Risk Intelligence
 
-Dernière mise à jour : 2026-08-06 (audit perf complet — cause réelle des 20-30 min sur un rapport de 45-70 pages identifiée par mesure directe sur un document réel : PAS le thinking mode Qwen, mais un doublon de re-ranking cross-encoder + un bug de parsing qui faisait planter Pass 3. Voir section dédiée.)
+Dernière mise à jour : 2026-08-06 (déploiement VPS Hostinger réussi — corpus/models transférés hors git par scp, Docker fonctionnel, ajout de Caddy en reverse proxy pour l'authentification (accès non protégé jugé insuffisant). Voir section dédiée.)
+
+Dernière mise à jour précédente : 2026-08-06 (audit perf complet — cause réelle des 20-30 min sur un rapport de 45-70 pages identifiée par mesure directe sur un document réel : PAS le thinking mode Qwen, mais un doublon de re-ranking cross-encoder + un bug de parsing qui faisait planter Pass 3. Voir section dédiée.)
 
 Dernière mise à jour précédente : 2026-08-06 (DIRECTIVE_CLAUDE_CODE_ESG_V3, Jour 2 fait — sévérité dynamique par signal, métrique "Signaux détectés" en tête de page, voir section dédiée)
 
@@ -34,6 +36,34 @@ Dernière mise à jour précédente : 2026-07-25 (points 3 ET 4 avancés — LLM
   - **Portfolio Dashboard** : historique des analyses de la session (`st.session_state`)
   - **Pattern Library** : fréquences et temps moyens réels calculés depuis le corpus
   - **Settings** : seuils de risk grade et k FAISS réellement fonctionnels, stats corpus en direct
+
+---
+
+## ✅ Déploiement VPS Hostinger (2026-08-06)
+
+Premier déploiement réel, VPS Hostinger KVM 2 (2 vCPU, 8 Go RAM, Ubuntu 24.04 LTS, `docker`/`docker compose` déjà installés via la fonctionnalité "Gestionnaire Docker" de Hostinger — pas besoin d'`apt install docker.io`).
+
+**Piège n°1 — `corpus/` et `models/` ne sont pas dans git** (`.gitignore` les exclut volontairement — PDF/binaires trop lourds pour l'historique). `git clone` sur le VPS ne les ramène pas. Transférés manuellement par `scp -r models corpus root@<ip>:~/Projet-Elisa/` depuis la machine locale — 80 Mo, tailles vérifiées identiques (`du -sh`) des deux côtés après transfert. `data/processed/chunks.csv` et `data/raw/corpus_cao_ifc.xlsx`, eux, sont bien suivis par git (transfert compressé donc taille de clone trompeuse — un `git clone` à "1,29 Mio" ne veut pas dire "fichiers manquants", un CSV se compresse énormément).
+
+**Piège n°2 — aucun fichier Docker n'était committé.** Le Dockerfile/docker-compose.yml/.dockerignore/docker_init.sh créés plus tôt dans la session existaient seulement en local, jamais poussés sur GitHub — le premier `docker compose up -d` sur le VPS échouait ("no configuration file provided"). Committé + poussé (commit `e5f437f`) avant de pouvoir continuer.
+
+**Deux échecs réseau ponctuels pendant le `ollama pull qwen3:4b-instruct`** (timeout à 45% puis timeout sur le manifeste) — résolus par une simple reconnexion + nouvelle tentative (Ollama reprend le pull interrompu, pas de re-téléchargement complet). Pas creusé plus loin, pas reproduit une 3e fois.
+
+**Vérifié fonctionnel de bout en bout** : upload d'un vrai document sur `http://187.124.209.94:8501`, analyse complète en 10-12 min (cohérent avec les 4-18 min mesurées en local — plus lent ici, logique avec 2 vCPU contre 8 sur la machine de dev).
+
+### Nom de domaine (`esg-risk-intelligence.tech`) — bloqué, mis en pause
+
+Domaine gratuit Hostinger configuré, DNS pointe bien vers le VPS via un enregistrement A (`187.124.209.94`) — **mais aussi un enregistrement AAAA (IPv6, `2a02:4780:f:d8ab::1`)** qui semble injoignable sur le port 8501 (`curl` direct en IPv6 échoue en 0ms — signal fort mais pas certain à 100%, l'environnement de test n'a peut-être pas d'IPv6 sortant non plus). Les navigateurs modernes essaient l'IPv6 en premier quand un AAAA existe → le domaine ne charge pas alors que l'IP brute fonctionne. **Décision (2026-08-06) : mis en pause**, pas réglé cette session — l'IP brute suffit pour l'instant.
+
+### Sécurisation — Caddy en reverse proxy (2026-08-06)
+
+Accès direct sans authentification jugé insuffisant dès qu'un document réel a été testé avec succès (voir échange avec l'utilisateur) — n'importe qui avec le lien pouvait utiliser l'outil. Décision : HTTPS reporté (dépend du problème AAAA/domaine non résolu ci-dessus), mais authentification ajoutée immédiatement, indépendante du domaine.
+
+`Caddyfile` (nouveau) : bloc `:80` (pas de nom de domaine — évite tout déclenchement automatique de Let's Encrypt, qui buterait sur le problème AAAA), `basic_auth` avec 2 comptes (`zelensky`/`boudini`, même mot de passe, hashé en bcrypt via `docker run --rm caddy:2 caddy hash-password` — jamais stocké en clair), puis `reverse_proxy app:8501`.
+
+`docker-compose.yml` modifié : nouveau service `caddy` (image `caddy:2`, publie 80 ET 443 — 443 déjà prêt pour le jour où le domaine sera réglé, pas de retouche du compose nécessaire à ce moment-là, juste le `Caddyfile`). Le service `app` **ne publie plus le port 8501 directement** (`ports:` retiré) — il reste joignable pour Caddy via le réseau Docker interne (nom de service), mais plus accessible de l'extérieur en contournant l'authentification. Nettoyage au passage : ligne `version: "3.8"` retirée (attribut obsolète, provoquait un warning inoffensif à chaque `docker compose up`).
+
+⚠️ **Limite assumée** : authentification unique partagée (2 comptes, même mot de passe), pas de vrai système multi-utilisateurs — suffisant pour un accès Stacy/Elisa/utilisateur, pas conçu pour scaler à plus de monde. Transport toujours en HTTP (pas de chiffrement) tant que le domaine/AAAA n'est pas réglé — mot de passe et documents uploadés circulent en clair sur le réseau.
 
 ---
 

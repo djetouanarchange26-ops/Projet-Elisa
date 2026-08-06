@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   ollama:
     image: ollama/ollama:latest
@@ -17,8 +16,12 @@ services:
   app:
     build: .
     container_name: esg-app
-    ports:
-      - "8501:8501"
+    # Plus de "ports: 8501:8501" — l'app n'est plus exposée directement à
+    # l'extérieur (checklist.md, 2026-08-06 : accès sans authentification
+    # jugé insuffisant pour un usage réel). Seul Caddy est publié ; il
+    # atteint "app" via le réseau Docker interne (nom de service, port 8501)
+    # sans avoir besoin de "ports:" pour ça — "ports:" ne sert qu'à exposer
+    # au host/à l'extérieur, pas à la communication inter-containers.
     volumes:
       - ./models:/app/models
       - ./data:/app/data
@@ -29,5 +32,26 @@ services:
       ollama:
         condition: service_healthy
 
+  # Reverse proxy + authentification (checklist.md, 2026-08-06) — point
+  # d'entrée unique. HTTP simple pour l'instant (pas de domaine fonctionnel
+  # avec DNS propre, cf. souci AAAA/IPv6 non résolu) ; 443 déjà exposé pour
+  # activer HTTPS plus tard sans re-toucher ce fichier (juste remplacer le
+  # bloc ":80" du Caddyfile par le nom de domaine — Caddy gère alors
+  # Let's Encrypt automatiquement).
+  caddy:
+    image: caddy:2
+    container_name: esg-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
 volumes:
   ollama_data:
+  caddy_data:
+  caddy_config:
