@@ -14,6 +14,7 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import plotly.graph_objects as go
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
 from analyze import analyze
@@ -24,6 +25,7 @@ import search
 import chunk_metadata
 import llm_confirm
 import export
+import config
 
 CHUNKS_PATH = Path(__file__).resolve().parent / "data/processed/chunks.csv"
 
@@ -34,6 +36,35 @@ FLAG_LABELS = {
 }
 SEVERITY_BY_FLAG = {1: "high", 2: "medium", 3: "low"}
 HL_CLASS_BY_FLAG = {1: "hl-red", 2: "hl-orange", 3: "hl-teal"}
+_SEVERITY_ORDER = ["low", "medium", "high"]
+
+
+def _group_severity(flag_num, sigs):
+    """DIRECTIVE_CLAUDE_CODE_ESG_V3, Jour 2 (§1.2) — Stacy veut un niveau de
+    sévérité par signal, pas une étiquette figée par flag (limite déjà notée
+    dans checklist.md, "Item E" : SEVERITY_BY_FLAG était constant quel que
+    soit le contenu réel du document — un flag3/compliance mentionné 20 fois
+    restait "low" au même titre qu'une seule mention).
+
+    CHOIX: escalade d'UN cran (jamais de désescalade) à partir de la
+    sévérité de base du flag, si CE document montre un volume de preuve
+    conséquent pour ce flag (plusieurs occurrences ET plusieurs thèmes
+    distincts touchés — pas juste le même mot-clé répété). Escalade
+    seulement, jamais de descente : une mention isolée d'un thème grave
+    (ex. "child labor") ne doit pas être discrètement rétrogradée juste
+    parce qu'elle n'apparaît qu'une fois — mieux vaut sur-alerter que
+    sous-alerter sur un outil d'aide à la décision crédit.
+    SEUIL: 5 occurrences / 2 thèmes distincts — jugement métier, pas
+    calibré statistiquement (comme SEVERITY_BY_FLAG lui-même) ; à ajuster
+    avec le retour réel de Stacy sur ses 6 rapports de référence.
+    """
+    base = SEVERITY_BY_FLAG.get(flag_num, "low")
+    occurrences = sum(s["occurrences"] for s in sigs)
+    n_distinct_signals = len({s["signal"] for s in sigs})
+    if occurrences >= 5 and n_distinct_signals >= 2:
+        idx = min(_SEVERITY_ORDER.index(base) + 1, len(_SEVERITY_ORDER) - 1)
+        return _SEVERITY_ORDER[idx]
+    return base
 # FRAGILE: fallback seulement — analyze() génère normalement une recommandation
 # contextualisée via llm_confirm.generate_recommendation (basée sur les signaux
 # réellement détectés). Ce template fixe par grade ne sert que si Ollama est
@@ -150,11 +181,16 @@ def _map_result_to_display(result):
                 excerpts.append(excerpt)
         signals.append({
             "flag_label":   FLAG_LABELS[_FLAG_NUM_TO_KEY[flag_num]],
-            "severity":     SEVERITY_BY_FLAG.get(flag_num, "low"),
+            "severity":     _group_severity(flag_num, sigs),
             "signal_names": [s["signal"] for s in sigs],
             "occurrences":  sum(s["occurrences"] for s in sigs),
             "excerpts":     excerpts[:3],
         })
+    # DIRECTIVE Jour 2 : sévérité maintenant dynamique (plus purement liée au
+    # numéro de flag) — les groupes HIGH doivent remonter en premier pour que
+    # Stacy les voie sans avoir à chercher, cf. objectif "voit immédiatement
+    # les signaux critiques sans cliquer".
+    signals.sort(key=lambda g: _SEVERITY_ORDER.index(g["severity"]), reverse=True)
 
     # Un "cas similaire" = un projet historique (agrégation des chunks par max score)
     by_project = {}
@@ -218,6 +254,11 @@ def _map_result_to_display(result):
         "probability_12m":  pred["probability_12m"],
         "flag_scores":      flag_scores,
         "signals":          signals,
+        # DIRECTIVE Jour 2 : compte de CATÉGORIES de signaux distinctes (pas
+        # d'occurrences brutes, cf. checklist.md — "158 occurrences" trompeur)
+        # pour la métrique en tête de page.
+        "n_signal_types":     sum(len(g["signal_names"]) for g in signals),
+        "n_critical_signals": sum(len(g["signal_names"]) for g in signals if g["severity"] == "high"),
         "similar_cases":    similar_cases,
         "evidence_by_flag": evidence_by_flag,
     }
@@ -406,6 +447,36 @@ def _compute_pattern_library():
     patterns.sort(key=lambda p: p["n_projects"], reverse=True)
     return patterns
 
+
+# ── Warmup Ollama (DIRECTIVE_CLAUDE_CODE_ESG_V3, §1.3) ───────
+@st.cache_resource(show_spinner=False)
+def warmup_ollama():
+    """Précharge le modèle LLM en mémoire au démarrage du process (une seule
+    fois, via @st.cache_resource) plutôt que de payer ce coût sur la toute
+    première analyse d'un utilisateur — utile en particulier juste après un
+    `docker compose up` (le modèle vient d'être pull/démarré, pas encore
+    chargé en RAM par Ollama).
+
+    Modèle : llm_confirm.MODEL_NAME ("qwen3:4b-instruct", pas "qwen3:4b" —
+    voir la note dans scripts/docker_init.sh sur pourquoi ce n'est PAS le nom
+    utilisé dans la directive brute). URL : config.OLLAMA_HOST, déjà
+    configurable pour Docker (ollama:11434 dans le container, localhost en
+    dev). Fail-open : si Ollama n'est pas encore prêt (ex: healthcheck Docker
+    pas terminé) ou injoignable, ignore silencieusement — analyze()/
+    llm_confirm.py ont déjà leur propre fail-open pour le premier vrai appel.
+    """
+    try:
+        requests.post(
+            f"{config.OLLAMA_HOST}/api/generate",
+            json={"model": llm_confirm.MODEL_NAME, "prompt": "hello", "stream": False},
+            timeout=60,
+        )
+    except Exception:
+        pass
+    return True
+
+
+warmup_ollama()
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -693,8 +764,21 @@ if page == "🔍 Transaction Analysis":
     analyze_error = None
     if has_input and analyze_clicked:
         with col_status:
-            with st.spinner("⏳ Analyse en cours... extraction → embeddings → scoring"):
+            # DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 1 (§1.1) : st.status() plutôt
+            # qu'un simple st.spinner() — rassure l'analyste que l'app n'est
+            # pas figée sur un document de 45-70 pages (analyze() peut
+            # prendre plusieurs dizaines de secondes, voir checklist.md).
+            # FRAGILE: analyze() reste un seul appel bloquant (scoring +
+            # signaux + LLM multi-pass) — pas de vraie progression étape par
+            # étape à l'intérieur tant qu'analyze.py n'est pas restructuré en
+            # étapes (Tier 2 de la directive, §2.5, pas fait ici). Seule
+            # l'extraction du texte est un vrai sous-état séparé mesurable ;
+            # le reste n'affiche que des messages AVANT/APRÈS l'appel, jamais
+            # pendant, pour ne pas prétendre à une progression qu'on ne peut
+            # pas observer.
+            with st.status("Analyse en cours...", expanded=True) as status:
                 try:
+                    st.write("Extraction du texte...")
                     if pasted_text.strip():
                         extracted_text = pasted_text.strip()
                         doc_label = "Texte collé"
@@ -704,7 +788,9 @@ if page == "🔍 Transaction Analysis":
                     else:
                         extracted_text = _extract_multi_doc_text(uploaded_files)
                         doc_label = f"{len(uploaded_files)} documents ({', '.join(f.name for f in uploaded_files)})"
+                    st.write(f"✓ Texte extrait ({len(extracted_text)} caractères)")
 
+                    st.write("Analyse ESG en cours (scoring, signaux, synthèse LLM)...")
                     result = analyze(
                         extracted_text,
                         risk_thresholds=st.session_state.get("risk_thresholds"),
@@ -715,6 +801,7 @@ if page == "🔍 Transaction Analysis":
                         document_label=doc_label,
                     )
                     display_result = _map_result_to_display(result)
+                    st.write("✓ Scoring, signaux et synthèse LLM terminés")
 
                     # CHANTIER 4 (V2) : chunks du DOCUMENT ANALYSÉ (pas le
                     # corpus) — pour la spécificité du document et l'aperçu
@@ -754,7 +841,9 @@ if page == "🔍 Transaction Analysis":
                         "n_findings":      len(findings_table),
                         "n_omissions":     len(result["deep_analysis"].get("omissions") or []),
                     })
+                    status.update(label="Analyse terminée", state="complete", expanded=False)
                 except Exception as e:
+                    status.update(label="L'analyse a échoué", state="error", expanded=True)
                     analyze_error = str(e)
 
     st.markdown("---")
@@ -896,13 +985,25 @@ if page == "🔍 Transaction Analysis":
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">📊 Risk Assessment Summary</div>', unsafe_allow_html=True)
 
-    col_grade, col_score, col_info = st.columns([1, 1, 4])
+    col_grade, col_score, col_signals, col_info = st.columns([1, 1, 1.4, 3])
     with col_grade:
         st.markdown(f'<div class="risk-grade grade-{grade}">{grade}</div>', unsafe_allow_html=True)
     with col_score:
         st.markdown(
             f'<div class="risk-score-badge">{display["risk_score"]}<span>/100</span></div>',
             unsafe_allow_html=True,
+        )
+    with col_signals:
+        # DIRECTIVE_CLAUDE_CODE_ESG_V3, Jour 2 (§1.2) — "elle voit
+        # immédiatement les signaux critiques sans cliquer". Compte de
+        # CATÉGORIES de signaux distinctes (pas d'occurrences brutes, cf.
+        # checklist.md sur le libellé "158 occurrences" trompeur).
+        n_critical = display["n_critical_signals"]
+        st.metric(
+            "Signaux détectés",
+            display["n_signal_types"],
+            delta=f"{n_critical} critique(s)" if n_critical else None,
+            delta_color="inverse" if n_critical else "off",
         )
     with col_info:
         st.markdown(f"**Risk Label:** {display['risk_label']}")
@@ -965,9 +1066,20 @@ if page == "🔍 Transaction Analysis":
                 icon = "🔴" if group["severity"] == "high" else ("🟡" if group["severity"] == "medium" else "🔵")
                 badges = " · ".join(name.capitalize() for name in group["signal_names"])
                 excerpts_html = "".join(f'<div style="margin-top:0.3rem;">"{e}"</div>' for e in group["excerpts"])
+                # FRAGILE: "occurrences" = nombre BRUT de matches mots-clés
+                # dans le document entier (regex sur pdf_text, pas sur les
+                # chunks) — seule la 1ère occurrence de chaque signal est
+                # vérifiée par le LLM (voir analyze._find_signals_in_document),
+                # pas chacune individuellement (coût prohibitif). Libellé
+                # explicite plutôt que "occurrence(s)" tout court, qui laissait
+                # croire que chaque mention était un risque confirmé — repéré
+                # sur un rapport réel où "community" comptait 158 mentions
+                # (dont beaucoup neutres/administratives), voir checklist.md.
                 st.markdown(f"""
                 <div class="flag-item {css_class}">
-                    {icon} <strong style="font-size:0.7rem;color:#999;">{group['flag_label'].upper()} — {group['occurrences']} occurrence(s)</strong><br>
+                    {icon} <strong style="font-size:0.7rem;color:#999;"
+                        title="Nombre de mentions du terme dans le document — seule la première occurrence de chaque signal est vérifiée par IA, pas chacune individuellement."
+                        >{group['flag_label'].upper()} — {group['occurrences']} mention(s) du terme</strong><br>
                     <span style="font-size:0.78rem;color:#666;">{badges}</span>
                     {excerpts_html}
                 </div>

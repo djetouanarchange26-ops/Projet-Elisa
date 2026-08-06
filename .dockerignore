@@ -1,0 +1,13 @@
+# Non spécifié par la directive V3.1 (pas de section .dockerignore) — construit
+# pour cohérence avec docker-compose.yml : models/, data/, corpus/ sont montés en
+# bind mount à l'exécution (voir volumes: dans docker-compose.yml), donc inutile
+# de les copier dans l'image via COPY . . (build plus rapide, image plus légère —
+# corpus/ contient des PDF jusqu'à ~18 Mo pièce).
+venv/
+__pycache__/
+*.pyc
+.git/
+models/
+data/
+corpus/
+*.log

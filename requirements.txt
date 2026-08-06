@@ -6,7 +6,6 @@ numpy
 pdfplumber
 streamlit
 faiss-cpu
-shap
 pytesseract
 pdf2image
 openpyxl

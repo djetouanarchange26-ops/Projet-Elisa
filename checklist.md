@@ -1,6 +1,16 @@
 # Journal de bord — NLP ESG Risk Intelligence
 
-Dernière mise à jour : 2026-07-31 (PROMPT_CLAUDE_CODE_ESG_V2 — Chantiers 1 à 4 faits et commités : métadonnées chunks, re-ranker cross-encoder, pipeline LLM multi-pass, refonte UI Streamlit — voir sections dédiées)
+Dernière mise à jour : 2026-08-06 (audit perf complet — cause réelle des 20-30 min sur un rapport de 45-70 pages identifiée par mesure directe sur un document réel : PAS le thinking mode Qwen, mais un doublon de re-ranking cross-encoder + un bug de parsing qui faisait planter Pass 3. Voir section dédiée.)
+
+Dernière mise à jour précédente : 2026-08-06 (DIRECTIVE_CLAUDE_CODE_ESG_V3, Jour 2 fait — sévérité dynamique par signal, métrique "Signaux détectés" en tête de page, voir section dédiée)
+
+Dernière mise à jour précédente : 2026-08-06 (retour terrain réel — rapport CAO Mundra CGPL : filtre boilerplate/table des matières dans chunk_text(), num_predict Pass 3 corrigé, libellé "occurrences" clarifié — voir section dédiée)
+
+Dernière mise à jour précédente : 2026-08-06 (DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 1 fait — plafond confirm_risk à 30 appels, st.status() dans app.py, voir section dédiée)
+
+Dernière mise à jour précédente : 2026-08-06 (DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 0 fait — cache/lazy-loading vérifié, config Ollama plafonnée, code mort supprimé, voir section dédiée)
+
+Dernière mise à jour précédente : 2026-07-31 (PROMPT_CLAUDE_CODE_ESG_V2 — Chantiers 1 à 4 faits et commités : métadonnées chunks, re-ranker cross-encoder, pipeline LLM multi-pass, refonte UI Streamlit — voir sections dédiées)
 
 Dernière mise à jour précédente : 2026-07-26 (Tier 1 des retours Elisa — items 1, 2, 3 faits, voir section dédiée ; le travail du 25/07, jusqu'ici non commité, a été commité ce jour)
 
@@ -24,6 +34,141 @@ Dernière mise à jour précédente : 2026-07-25 (points 3 ET 4 avancés — LLM
   - **Portfolio Dashboard** : historique des analyses de la session (`st.session_state`)
   - **Pattern Library** : fréquences et temps moyens réels calculés depuis le corpus
   - **Settings** : seuils de risk grade et k FAISS réellement fonctionnels, stats corpus en direct
+
+---
+
+## ✅ Audit perf — cause réelle des 20-30 min sur un rapport de 45-70 pages (2026-08-06)
+
+**Contexte** : hypothèse proposée (par une autre session) — le thinking mode de `qwen3:4b` ferait 29s/appel LLM au lieu de 2s, cause de 20-50 min sur un document réel. Avant d'appliquer les correctifs proposés (changer de modèle, ajouter `/no_think`), vérification du code réel :
+- `MODEL_NAME` était déjà `qwen3:4b-instruct` (pas `qwen3:4b`) dans `llm_confirm.py` ET `deep_analysis.py` — c'est justement la variante SANS thinking mode (confirmé via `ollama list` : `qwen3:4b-instruct` n'a pas la capability `"thinking"`, `qwen3:4b` l'a).
+- `num_predict`/`num_ctx` par usage déjà en place depuis le Tier 0 (`config.OLLAMA_CONFIGS`).
+- 3 appels `confirm_risk` réels mesurés isolément : ~4.2s chacun, pas 29s.
+- `ollama ps` : le modèle est bien résident en mémoire (`keep_alive` fonctionne).
+
+**Diagnostic honnête : le problème décrit (thinking mode actif) n'existe pas dans ce code.** Plutôt que d'appliquer un fix qui n'aurait rien changé, audit chronométré réel : `analyze()` décomposé étape par étape, exécuté sur un vrai document du corpus (`CAO_Serbia_Morava_Corridor_Motorway_05_Compliance_Appraisal_Report.pdf`, 63 pages, 171 chunks après filtre boilerplate — dans la fourchette cible 45-70 pages).
+
+**Résultat AVANT correctif — 1065.8s (17.8 min), cohérent avec le "20-30 min" rapporté :**
+
+| Étape | Temps | % | Contenu |
+|---|---|---|---|
+| `get_flag_scores` | 453.6s | 43% | confirm_risk×30 (plafonné, Tier 1) + FAISS/rerank sur 171 chunks |
+| `search_similar` | 246.6s | 23% | FAISS/rerank sur les MÊMES 171 chunks — **zéro appel LLM** |
+| `_find_signals_in_document` | 28.4s | 3% | ≤10 confirm_risk sur pdf_text brut |
+| `generate_recommendation` | 11.1s | 1% | 1 appel |
+| `deep_analysis` (Pass1×20 + Pass2) | 288.5s | 27% | Pass 3 **a planté** (voir bug ci-dessous) |
+| `summarize_passage`×11 (app.py) | 28.1s | 3% | similar_cases + evidence_by_flag |
+
+**Cause réelle #1 (46% du temps) : re-ranking cross-encoder calculé DEUX FOIS.** `analyze.py` appelait `search.get_flag_scores(pdf_text, ...)` PUIS `search.search_similar(pdf_text, ...)` séparément — chacun refaisait indépendamment tout le pipeline embedding + FAISS + re-ranking cross-encoder sur les MÊMES 171 chunks du même document. `search_similar` (246.6s, zéro appel LLM) est la preuve directe : c'est du travail 100% recalculé pour rien. Cette machine n'a pas de GPU (`torch.cuda.is_available() == False`, CPU Intel Core Ultra 7 258V 8 cœurs) — le cross-encoder tourne intégralement sur CPU, donc ce doublon coûte particulièrement cher ici.
+
+**Fix** : refactor de `search.py` — nouvelle fonction interne `_rerank_all_chunks()` (embedding + FAISS + rerank, factorisée), nouvelle fonction publique `analyze_chunks()`/`analyze_query()` qui calcule le re-ranking UNE SEULE FOIS et en dérive à la fois `flag_scores` ET `similar_passages`. `get_flag_scores_from_chunks`/`search_similar_from_chunks` restent utilisables seules avec un comportement identique (vérifié : mêmes résultats qu'avant, `assert scores_only == scores_combined` passé) — `model.build_training_data` (qui n'a besoin que de `flag_scores`) n'est pas affectée. `analyze.py` bascule sur `search.analyze_query()` à la place des deux appels séparés.
+
+**Cause réelle #2 (27% du temps, MAX_CHUNKS_PASS1=20 conservé sur décision explicite) : `deep_analysis` Pass 1 fait 20 appels LLM séquentiels**, un par chunk. Inhérent au design actuel (une question à la fois, jamais de batching). Pas touché cette session (arbitrage vitesse/profondeur explicitement tranché : garder les 20 chunks).
+
+**Bug trouvé en creusant Pass 3 : `_parse_pass1_response` laissait un champ à `None` (pas `{"present": False}`) quand une des 3 lignes attendues (ENGAGEMENT/INCIDENT/EVASIF) n'était pas trouvée dans la réponse du LLM — probablement une troncature liée à `num_predict=100` sur cette passe (français, comme le bug Pass 3 de la veille). `run_pass3` fait `f.get("incident", {}).get("present")` — `.get(..., {})` ne protège PAS contre une valeur `None` existante (seulement contre une clé absente) → `AttributeError` → Pass 3 échoue silencieusement (fail-open, aucune exception visible, mais la carte "🧠 Deep Analysis" reste vide sans explication). Confirmé dans l'audit AVANT : `[WARN] deep_analysis Pass 3 : erreur inattendue ('NoneType' object has no attribute 'get')`.
+
+**Fix** : `_parse_pass1_response` initialise maintenant `result` avec `{"present": False}` pour les 3 clés (au lieu de `None`) — un champ jamais matché reste un dict valide, plus jamais un trou. `config.OLLAMA_CONFIGS["deep_extract"]` remonté de 100 à 180 (réduit la fréquence des troncatures à la racine, pas juste le symptôme).
+
+**Vérifié** : `test.py --unit` 15/15, `--integ` 8/8, `--business` 4/5 (mêmes résultats qu'avant refactor — comportement inchangé). API équivalence testée explicitement : `get_flag_scores()` seule vs `analyze_query()` combinée → résultats identiques (`assert scores_only == scores_combined` passé).
+
+**Re-mesure APRÈS fix — deux runs, résultat contre-intuitif à prendre au sérieux :**
+
+1er run après fix (même document, cache LLM encore chaud de la veille) : **267.0s (4.4 min)**. Chiffre flatteur mais **faussé** — `confirm_risk`/`deep_analysis` réutilisaient le cache disque de l'audit AVANT (même texte exact = mêmes clés de cache). Repéré et signalé avant de le prendre pour argent comptant.
+
+Pour un chiffre honnête, caches mis de côté (sauvegardés, restaurés après coup — rien perdu) et re-run à froid sur le MÊME document :
+
+| Étape | Avant | Après (à froid) |
+|---|---|---|
+| Rerank + confirm_risk (fusionné) | 453.6s + 246.6s = 700.2s (2 passages) | 506.9s (1 seul passage) |
+| `_find_signals_in_document` | 28.4s | 31.7s |
+| `generate_recommendation` | 11.1s | 9.7s |
+| `deep_analysis` | 288.5s (**Pass 3 a planté**) | 468.9s (**Pass 3 a expiré : timeout Ollama 60s dépassé**) |
+| `summarize_passage`×11 | 28.1s | 89.3s |
+| **TOTAL** | **1065.8s (17.8 min)** | **1115.2s (18.6 min)** |
+
+**Le total à froid n'a PAS baissé — légèrement pire, malgré la suppression prouvée d'un doublon de 246.6s.** Explication : le doublon de re-ranking (246.6s de travail 100% inutile, prouvé par construction — l'étape fusionnée ne PEUT plus le refaire deux fois) est bien éliminé, mais ce gain est masqué par un problème préexistant et déjà documenté : **le débit d'Ollama se dégrade sous charge séquentielle soutenue** (`checklist.md`, section "Chantier ouvert — préchauffage du cache LLM", 25/07/2026 — jamais résolu, volontairement mis en pause à l'époque). Un `analyze()` complet enchaîne ~50-60 appels LLM séquentiels (confirm_risk×30 + signaux×≤10 + recommandation×1 + Pass1×20 + Pass2×1 + Pass3×1 + summarize×≤11) — sur cette machine CPU sans GPU, ce volume soutenu fait dériver la latence par appel bien au-delà des ~4.2s mesurés isolément (`summarize_passage` est passé de 28.1s à 89.3s pour le même nombre d'appels — 3× plus lent en fin de chaîne qu'en isolation).
+
+**Conséquence concrète, bug distinct trouvé** : `deep_synthesize` (Pass 3, `num_predict=450` depuis le fix de la veille) a dépassé le timeout par défaut de 60s (`_call_ollama`, `deep_analysis.py`) — 450 tokens à un débit dégradé (~7 tokens/s ou moins en fin de chaîne) frôle ou dépasse 60s. Le fix de troncature de la veille (augmenter `num_predict`) a mécaniquement augmenté le risque de timeout sans que le timeout soit remonté en conséquence. **Fix** : `run_pass3` passe maintenant `timeout=150` explicitement à `_call_ollama` (au lieu du défaut 60s partagé par toutes les passes).
+
+**Ce qui reste vrai malgré tout** : le doublon de re-ranking éliminé est un gain garanti, indépendant du cache et de la charge Ollama (246.6s de travail CPU pur qui ne peut structurellement plus se reproduire). Le vrai facteur limitant sur cette machine n'est ni le thinking mode (absent), ni le doublon (corrigé), mais la dégradation de débit Ollama sous charge soutenue — **déjà identifiée en juillet, déjà mise en pause à l'époque, confirmée à nouveau aujourd'hui indépendamment**. Piste non explorée cette session (cohérent avec la décision de juillet) : `OLLAMA_NUM_PARALLEL`, réduire le nombre total d'appels séquentiels par analyse (ex: MAX_CHUNKS_PASS1 plus bas), ou tester sur le serveur de déploiement prévu (l'utilisateur prévoit de redéployer et retester — cette dégradation sous charge soutenue est plus probablement un facteur RAM/CPU de cette machine spécifique que du code, à confirmer une fois sur le serveur).
+
+**Tests de non-régression après le fix de timeout** : `test.py --unit` 15/15, `--integ` 8/8.
+
+---
+
+## ✅ DIRECTIVE_CLAUDE_CODE_ESG_V3 — Jour 2 : sévérité + métriques (2026-08-06)
+
+§1.2 de la directive ("ce que Stacy a demandé") : signaux visibles, colorés par flag, avec un niveau de sévérité. Audit avant de coder : la carte "Detected Signals" faisait déjà l'essentiel de ça depuis le Tier 1 des retours Elisa (2026-07-26) — groupement par flag, icône/couleur par sévérité, extraits dépliés. Pas de réécriture depuis zéro façon `st.expander` générique de la directive (aurait régressé la UX déjà validée). Deux vrais gaps identifiés et corrigés :
+
+**1. Sévérité dynamique par signal** (déjà noté "Item E" dans checklist.md, non résolu jusqu'ici) : `SEVERITY_BY_FLAG` était une constante par flag (Flag1=high/Flag2=medium/Flag3=low) totalement indépendante du contenu réel — un flag3/compliance mentionné 20 fois dans un document restait "low" au même titre qu'une seule mention isolée. Nouvelle fonction `_group_severity()` (`app.py`) : escalade d'UN cran (jamais de désescalade) depuis la sévérité de base du flag si le document montre un volume de preuve conséquent pour ce flag (≥5 occurrences ET ≥2 thèmes distincts, pas juste le même mot-clé répété). Escalade seulement, jamais de descente — une mention isolée d'un thème grave ne doit pas être discrètement rétrogradée juste parce qu'elle n'apparaît qu'une fois. SEUIL choisi par jugement métier (comme `SEVERITY_BY_FLAG` lui-même), pas calibré statistiquement — à ajuster avec le retour réel de Stacy. Les groupes de signaux sont maintenant triés par sévérité décroissante (HIGH en premier) plutôt que par numéro de flag, cohérent avec l'objectif "voit immédiatement les signaux critiques sans cliquer".
+
+**2. Métrique "Signaux détectés" en tête de page** : ajoutée dans la carte "Risk Assessment Summary" (entre le badge Grade/Score et le Risk Label), via `st.metric` avec delta "N critique(s)" en rouge si au moins un groupe est sévérité HIGH. Compte les CATÉGORIES de signaux distinctes détectées (`n_signal_types`), pas les occurrences brutes — cohérent avec le fix du jour précédent sur le libellé "occurrences" trompeur. Probabilité 12 mois volontairement PAS remontée en tête (décision déjà actée le 2026-07-26 : l'outil doit se lire comme un instrument d'alerte, pas d'abord un prédicteur de défaut — pas de raison de revenir dessus).
+
+Vérifié en conditions réelles (Playwright) sur un texte synthétique conçu pour déclencher l'escalade (17 mentions de "compliance", 3 thèmes distincts — Esap delays/Biodiversity threat/PS non-conformance) : le groupe Structural Compliance Risk passe bien de 🔵 LOW à 🟡 MEDIUM, la métrique "Signaux détectés : 4" s'affiche correctement en tête. `test.py --unit` 15/15, `--integ` 8/8, aucune régression.
+
+---
+
+## ✅ Retour terrain — rapport CAO Mundra CGPL réel (2026-08-06)
+
+Premier vrai document (pas un texte de test synthétique) passé dans l'app depuis le déploiement Tier 0/1. Trois bugs réels remontés par capture d'écran, tous vérifiés avant correction (pas juste appliqués sur confiance) :
+
+**1. Table des matières traitée comme du contenu analytique** *[mesuré]* : `chunk_text()` (`scripts/search.py`) découpait aveuglément, y compris les pages de sommaire/liste de figures d'un PDF (lignes à leaders de points type `"Effort and Rate ... 156 Figure 29: ... 88"`). Conséquences observées : Pass 1 de `deep_analysis.py` détectait des "formulations évasives" sur des titres de section ("CAO's compliance function follows a three-step approach", "Conclusions on Fishing Community Impacts" — des HEADERS, pas du texte), et `_compute_document_specificity` (specificity_score) était gonflé à 91% par les numéros de page comptés comme marqueurs concrets.
+
+Fix : nouvelle fonction `_is_boilerplate()` dans `search.py`, appelée dans `chunk_text()` en plus du filtre `min_words` déjà existant (3 heuristiques bon marché : ≥3 leaders de points, ratio de points >15%, diversité lexicale <25%). Comme `ingest.py` importe `chunk_text` directement depuis `search.py` (une seule implémentation, pas une copie séparée malgré un ancien commentaire qui le laissait penser — corrigé au passage), le fix s'applique automatiquement partout où `chunk_text()` est utilisé : `deep_analysis.py` (Pass 1/2), `search.get_flag_scores`/`search_similar` (scoring/pattern library), ET `app._compute_document_specificity` (spécificité du document affichée).
+
+**Vérifié avant d'appliquer** (pas sur confiance) :
+- Sur le corpus réel existant (4203 chunks) : 1.6% flaggés (66 chunks), 100% des chunks échantillonnés (10) confirmés comme du vrai bruit (leaders de sommaire ou glyphes de puces mal extraits du PDF) — 0 faux positif observé sur l'échantillon.
+- Sur un texte synthétique TOC + contenu réel : les 2 fenêtres de table des matières sont bien exclues, seule la fenêtre de contenu analytique est retenue.
+
+⚠️ **Ce qui n'est PAS corrigé par ce fix** : les 66 chunks de boilerplate déjà présents dans le corpus existant (`chunks.csv`/`embeddings.npy`/`faiss_index.bin`/`cox_model.pkl`) ne sont pas retirés rétroactivement — `ingest.py` ne retraite que les documents pas encore vus (dédup par `project_id`). Purger le corpus existant nécessiterait un ré-ingest complet (`chunks.csv` reconstruit de zéro) + `pipeline.py` (ré-embedding + FAISS + Cox, ~15-20 min, cf. repères techniques en bas de ce fichier) — pas fait ici, décision à prendre avec l'utilisateur (impact sur `cox_model.pkl`/les baselines Pattern Library, opération longue).
+
+**2. Synthèse Pass 3 tronquée en plein milieu de phrase** *[mesuré, régression du Tier 0]* : le plafond `num_predict=200` posé sur `deep_synthesize` (config Ollama, Tier 0) coupait la synthèse avant la fin — observé texto : *"Ces lacunes rendent impossible une évaluation f"*. Cause : le prompt demande 3-5 phrases EN FRANÇAIS, plus coûteux en tokens que l'anglais pour un texte équivalent ; 200 était insuffisant. Remonté à 450 dans `config.OLLAMA_CONFIGS["deep_synthesize"]`. Revérifié avec un appel Pass 3 réel (findings similaires au cas Mundra, texte inédit pour éviter un hit de cache) : réponse de 914 caractères, se termine par une ponctuation finale — plus de troncature.
+
+**3. Libellé "N occurrence(s)" trompeur** (`app.py`, carte Detected Signals) : `analyze._find_signals_in_document()` compte TOUTES les occurrences brutes d'un pattern regex dans le document entier (`pdf_text`, pas les chunks) — seule la PREMIÈRE occurrence de chaque signal est vérifiée par le LLM (`confirm_risk`), pas chacune individuellement (coût prohibitif : jusqu'à 158 appels pour un seul signal sur un document réel). Le nombre affiché n'est donc pas "158 signaux confirmés" mais "158 mentions du terme, dont la première a été jugée pertinente par l'IA" — la distinction n'était pas claire dans l'UI. **Diagnostic important** : ce n'est PAS corrigé par le fix boilerplate ci-dessus, parce que `_find_signals_in_document` travaille sur le texte brut du document, pas sur les chunks filtrés — une table des matières qui répète les mots "Community"/"Pollution"/"Compliance" comme titres de section continue de gonfler ce compteur.
+
+Fix appliqué (le seul réaliste sans réintroduire le problème de perf du Tier 1 — vérifier CHAQUE occurrence par LLM coûterait autant que ce qu'on vient de plafonner) : libellé changé de "N occurrence(s)" à "N mention(s) du terme", avec un tooltip HTML (`title=`) explicite sur la limite (une seule occurrence vérifiée par IA, pas toutes).
+
+⚠️ **Limite non résolue, documentée pour référence future** : le compteur brut reste gonflé par le bruit de table des matières côté `_find_signals_in_document` (contrairement à `flag_scores`/`specificity_score`, qui bénéficient du fix chunk_text ci-dessus). Un vrai fix nécessiterait soit de faire tourner `_find_signals_in_document` sur les chunks filtrés plutôt que sur `pdf_text` brut (perd la position exacte pour le surlignage, à repenser), soit de stripper les zones de type TOC du texte brut avant la détection de signaux — pas fait ici, hors périmètre d'un fix "libellé".
+
+Vérifié : `test.py --unit` 15/15, `--integ` 8/8 (0 warning), `--business` 4/5 (0 échec, warning déjà connu).
+
+---
+
+## ✅ DIRECTIVE_CLAUDE_CODE_ESG_V3 — Tier 1 (2026-08-06)
+
+Fix perf pour documents 45-70 pages (§1.1 de la directive).
+
+**1. Plafond de 30 appels `confirm_risk` par analyse** (`scripts/search.py`, `get_flag_scores_from_chunks`) : sur un document de 100-200 chunks, le nombre de paires (chunk, flag topicalement matché par `signals.py`) pouvait monter à 50-100, chacune un appel LLM séquentiel (~2-4s) — 2 à 5 min sur un document réel. La fonction est restructurée : la recherche FAISS + re-ranking tourne maintenant AVANT le filtre LLM (au lieu d'après), ce qui permet de prioriser les paires (chunk, flag) par leur meilleur score FAISS/rerank déjà obtenu — les plus susceptibles de peser sur le `max()` final de `flag_scores` — plutôt que par ordre d'apparition dans le document. Seules les `MAX_CONFIRM_RISK_CALLS` (30) paires les mieux classées sont vérifiées par LLM ; le reste retombe sur le comportement pré-filtre (pas gated), cohérent avec le fail-open déjà appliqué partout ailleurs à ce filtre. Bonus : la recherche/rerank n'est plus recalculée une seconde fois après le filtre (était dupliquée avant ce chantier), donc moins de travail cross-encoder aussi.
+
+Vérifié directement (pas seulement via les tests existants) : script de vérification avec `confirm_risk` mocké (compté, pas appelé) sur un texte synthétique de 76 chunks touchant les 3 flags — **30 appels exactement**, jamais plus, quel que soit le nombre de paires candidates (228 dans ce cas). `test.py --unit` 15/15, `--integ` 8/8 (0 warning cette fois, `analyze()` mesuré à 10.1s vs 60.4s avant — comparaison partiellement biaisée par le cache LLM déjà chaud sur ce texte de test précis depuis la vérification Tier 0, donc pas un chiffre à citer tel quel, mais cohérent avec l'attendu), `--business` 4/5 (0 échec, le seul warning est le manque de discrimination du grade déjà documenté §4 CORRECTIONS.md, pas une régression).
+
+**2. `st.status()` autour de l'appel à `analyze()`** (`app.py`) : remplace le `st.spinner()` générique par un conteneur `st.status()` expansible, avec un vrai sous-état mesurable ("Extraction du texte..." → "✓ Texte extrait (N caractères)") suivi d'un message unique pour la partie scoring/signaux/LLM ("Analyse ESG en cours...") — PAS de fausse progression étape par étape à l'intérieur de `analyze()` : la fonction reste un seul appel bloquant (`analyze.py` n'est pas encore restructuré en étapes, §2.5 de la directive, pas fait ici), donc afficher des coches "✓ Scores calculés"/"✓ Signaux détectés" PENDANT l'appel aurait été un mensonge d'UI. À la fin, le statut se réduit avec un ✓ et le libellé "Analyse terminée" (`state="complete"`) ; en cas d'exception, `state="error"` avant de laisser `analyze_error` suivre son chemin existant vers `st.error()`.
+
+Testé en conditions réelles (Playwright, chromium headless, app relancée sur le port 8502) : upload d'un `.txt`, capture pendant l'analyse (le conteneur expansé montre bien "Extraction du texte..." → "✓ Texte extrait (499 caractères)" → "Analyse ESG en cours...") et après (conteneur réduit, "✓ Analyse terminée", résultats affichés normalement en dessous — Deep Analysis, Flag Scores, Detected Signals). 0 erreur.
+
+⚠️ **Pas fait** (hors périmètre Tier 1, dans les tiers suivants de la directive) : UI flags/sévérité/surlignage (§1.2), Docker/déploiement VPS (§1.3), pré-analyse des documents de Stacy (§1.4).
+
+---
+
+## ✅ DIRECTIVE_CLAUDE_CODE_ESG_V3 — Tier 0 (2026-08-06)
+
+Suite à `SYNTHESE_AUDIT_PIPELINE.md` (confrontation de l'"autopsie par couches" au code réel) et `DIRECTIVE_CLAUDE_CODE_ESG_V3.md` (plan Phase 1 — déployer). Tier 0 = fixes gratuits, zéro risque, avant tout le reste.
+
+**1. `@st.cache_resource` — vérifié, PAS ajouté** *[mesuré]* : la directive listait ça comme une hypothèse à vérifier dans `app.py`. En réalité, `app.py` n'appelle jamais `search.load_search_components()`/`load_cox_model()` directement — tout passe par `analyze()` → `analyze._ensure_loaded()`, qui charge déjà les modèles une seule fois par process via des variables globales au module (singleton), l'équivalent fonctionnel de `@st.cache_resource`. Empiler un vrai `@st.cache_resource` par-dessus aurait chargé les modèles en double sans bénéfice. Seul vrai trou trouvé : `_ensure_loaded()` n'était pas thread-safe (deux premières requêtes concurrentes pouvaient toutes les deux voir `_model is None` et charger en double) — corrigé avec un `threading.Lock` (`scripts/analyze.py`), pertinent pour le déploiement VPS multi-utilisateurs (§1.3 de la directive).
+
+**2. Config Ollama** : nouveau `config.OLLAMA_CONFIGS` (num_predict/num_ctx par usage : confirm_risk=5/512, summarize=80/768, recommend=150/1024, deep_extract=100/1024, deep_synthesize=200/2048), branché dans `llm_confirm.py` (3 appels) et `deep_analysis.py` (Pass 1/3 seulement — voir écart ci-dessous). `"keep_alive": -1` ajouté à chaque requête (plutôt que la variable d'environnement `OLLAMA_KEEP_ALIVE` côté serveur suggérée par la directive — un paramètre par requête est plus portable, ne nécessite pas de redémarrer Ollama ni de config OS, et fonctionnera pareil une fois Ollama dans son propre container Docker, §1.3).
+Températures déjà tunées par appel (confirm_risk=0 pour la déterminisme, summarize=0.2, recommend=0.3) **laissées inchangées** — la directive proposait d'autres valeurs mais sans les justifier, alors que celles en place sont documentées ; seuls num_predict/num_ctx (le vrai levier de perf) ont été touchés.
+
+⚠️ **Écart volontaire par rapport à la directive** : Pass 2 de `deep_analysis.py` (détection d'omissions) est **exclue** du plafond `num_predict`. La directive proposait de la traiter comme "deep_extract" (100 tokens) au même titre que Pass 1. Mais `run_pass2()` ne fonctionne correctement que parce que le modèle qwen3:4b-instruct se répète plusieurs fois avant de conclure proprement (bug déjà documenté et corrigé le 2026-07-31, section Chantier 3 : jusqu'à 29 lignes pour 6 sujets, seul le DERNIER bloc de répétition est retenu). Plafonner à 100 tokens aurait tronqué la réponse avant cette dernière répétition et fait régresser un bug déjà corrigé. Pass 2 tourne donc sans plafond de longueur (comportement inchangé), seule l'URL Ollama configurable et `keep_alive` s'y appliquent.
+
+**3. URL Ollama configurable** : `llm_confirm.py` codait `http://localhost:11434` en dur — bascule vers `config.OLLAMA_HOST` (lit `OLLAMA_HOST`, déjà utilisé par `deep_analysis.py`), nécessaire pour Docker (§1.3 de la directive, Ollama dans un autre container).
+
+**4. `batch_size=64`/`normalize_embeddings=True`** *[mesuré, déjà fait pour moitié]* : `pipeline.py` les avait déjà (corpus complet). `search._encode_texts` (requête live) faisait une normalisation manuelle (`embeddings / np.linalg.norm(...)`), mathématiquement équivalente mais dupliquée — remplacée par `model.encode(texts, batch_size=64, normalize_embeddings=True)`, un seul appel.
+
+**5. Code mort supprimé** *[mesuré]* : `scripts/embed.py` (confirmé mort par grep — aucun import nulle part, remplacé par `pipeline.py`). `scripts/explain.py` (SHAP) — confirmé mort dans le pipeline de prod (jamais importé par `app.py`/`analyze.py`, cohérent avec le retrait de SHAP du 2026-07-24 déjà noté dans ce journal) mais encore utilisé par un bloc de test isolé (`test.py`, section 2.3 "SHAP") qui testait `explain.py` directement, pas la sortie de `analyze()`. Supprimé avec son bloc de test associé (dead code cascadé, pas juste le fichier) et la dépendance `shap` retirée de `requirements.txt`. Message d'avertissement obsolète dans `test.py` ("réduire SHAP n_background") mis à jour pour pointer vers le vrai chantier perf actuel.
+
+**Vérification** : `test.py --unit` 15/15 ✅. `test.py --integ` 7/8 ✅ (le seul warning est `analyze() < 45s`, actuellement 60.4s — attendu, c'est exactement le "Chantier ouvert" perf déjà documenté, pas une régression de ce Tier 0 ; Tier 1 de la directive s'y attaque via le plafonnement des appels `confirm_risk` à top-30 chunks).
+
+**Pas encore fait** (Tier 1+ de la directive, pas dans le périmètre "gratuit") : plafonnement top-30 des appels `confirm_risk` dans `get_flag_scores_from_chunks`, barre de progression `st.status()`, UI flags/sévérité/surlignage, Docker/déploiement VPS.
 
 ---
 

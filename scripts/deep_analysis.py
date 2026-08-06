@@ -83,6 +83,17 @@ def _cache_key(pass_name, text):
     return hashlib.sha256(f"{pass_name}:{text}".encode("utf-8")).hexdigest()
 
 
+# DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 0 — Pass 1 (extraction courte, 3 lignes
+# attendues) et Pass 3 (synthèse) ont une longueur de réponse prévisible, donc
+# plafonnées via config.OLLAMA_CONFIGS. Pass 2 est délibérément EXCLUE de ce
+# plafond (num_predict) : run_pass2() ne fonctionne correctement que parce que
+# le modèle "se répète" plusieurs fois avant de conclure (mesuré : jusqu'à 29
+# lignes/6 sujets, cf. run_pass2 et checklist.md Chantier 3) — seul le DERNIER
+# bloc est retenu. Un num_predict trop bas tronquerait la réponse avant cette
+# dernière répétition et ferait régresser ce bug déjà corrigé.
+_CONFIG_KEY_BY_PASS = {"pass1": "deep_extract", "pass3": "deep_synthesize"}
+
+
 def _call_ollama(prompt, pass_name, cache_input, temperature=0.0, timeout=60):
     """Appel Ollama générique avec cache disque — retourne le texte de
     réponse brut, ou None si Ollama est injoignable/répond vide (fail-open,
@@ -94,11 +105,15 @@ def _call_ollama(prompt, pass_name, cache_input, temperature=0.0, timeout=60):
         if key in cache:
             return cache[key]
 
+    options = {"temperature": temperature}
+    config_key = _CONFIG_KEY_BY_PASS.get(pass_name)
+    if config_key:
+        options.update(config.OLLAMA_CONFIGS[config_key])
     try:
         resp = requests.post(
             OLLAMA_URL,
             json={"model": MODEL_NAME, "prompt": prompt, "stream": False,
-                  "options": {"temperature": temperature}},
+                  "options": options, "keep_alive": -1},
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -151,8 +166,20 @@ def _parse_pass1_response(response_text):
     qu'un parseur JSON face aux imperfections d'un modèle 4B (cf. docstring
     du module). Un champ absent/mal formé -> "présent": False plutôt que de
     lever une exception (fail gracefully, ce chunk contribue juste moins).
+
+    BUG CORRIGÉ (2026-08-06, checklist.md) : le défaut était `None` (pas
+    encore `{"present": False}`) pour une ligne jamais matchée — si la
+    réponse du LLM était coupée avant la 3e ligne (EVASIF, souvent tronquée
+    par num_predict trop bas) ou ne respectait pas exactement le format
+    demandé, `result[key]` restait `None`. `run_pass3` fait ensuite
+    `f.get("incident", {}).get("present")` — `.get(..., {})` ne sert à rien
+    quand la clé EXISTE avec la valeur `None` (le défaut de `.get()` ne
+    s'applique que si la clé est ABSENTE) → `None.get(...)` →
+    `AttributeError`, Pass 3 échouait silencieusement (fail-open, mais la
+    synthèse ne se générait alors jamais). Mesuré sur un document réel de
+    171 chunks (checklist.md, audit du 2026-08-06).
     """
-    result = {"engagement": None, "incident": None, "evasif": None}
+    result = {"engagement": {"present": False}, "incident": {"present": False}, "evasif": {"present": False}}
     for line in response_text.splitlines():
         for key, pattern in _PASS1_LINE_RE.items():
             m = pattern.search(line)
@@ -372,7 +399,14 @@ def run_pass3(project_name, pass1_findings, omissions, risk_grade, probability_1
         "p": project_name, "i": incidents, "v": vague_commitments, "e": evasive,
         "o": omissions, "g": risk_grade, "pr": round(probability_12m, 3), "s": signal_names,
     }, sort_keys=True)
-    return _call_ollama(prompt, "pass3", cache_input, temperature=0.2)
+    # BUG CORRIGÉ (2026-08-06, audit perf checklist.md) : deep_synthesize
+    # (num_predict=450, cf. config.py) peut légitimement approcher ou
+    # dépasser le timeout par défaut de _call_ollama (60s) sur cette machine
+    # CPU (~7-10 tokens/s mesuré sous charge) — mesuré : timeout réel
+    # atteint sur cette passe précise après un run à froid avec ~50 appels
+    # LLM déjà enchaînés. Le num_predict a été augmenté (fix troncature de
+    # la veille) sans augmenter ce timeout en conséquence — corrigé ici.
+    return _call_ollama(prompt, "pass3", cache_input, temperature=0.2, timeout=150)
 
 
 # ============================================================================

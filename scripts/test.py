@@ -120,7 +120,6 @@ def test_integration():
     try:
         import search
         from model import load_cox_model, predict_risk
-        from explain import create_shap_explainer, explain_prediction
         from analyze import analyze
 
         model, index, metadata = search.load_search_components()
@@ -153,14 +152,6 @@ def test_integration():
               pred["risk_grade"] in ["A", "B", "C", "D"],
               f"grade = {pred['risk_grade']}")
 
-        # 2.3 SHAP
-        from model import build_training_data
-        training_df = build_training_data(model, index, metadata)
-        explainer = create_shap_explainer(cox, training_df)
-        shap_exp = explain_prediction(scores, explainer)
-        _test("SHAP → 3 explications",   len(shap_exp) == 3)
-        _test("SHAP values sont floats", all(isinstance(e["shap_value"], float) for e in shap_exp))
-
         # 2.4 Pipeline complète
         t0 = time.time()
         result = analyze(test_text)
@@ -173,7 +164,7 @@ def test_integration():
               all(k in result for k in expected_result_keys))
         _test(f"analyze() < 45s (actuel: {dt:.1f}s)",
               dt < 45,
-              "Trop lent → réduire SHAP n_background ou nsamples",
+              "Trop lent → voir checklist.md, chantier perf LLM/deep_analysis",
               warning_only=True)
 
     except Exception as e:

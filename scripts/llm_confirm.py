@@ -44,9 +44,11 @@ from pathlib import Path
 
 import requests
 
+import config
+
 BASE = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE / "models" / "llm_confirm_cache.json"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_URL = f"{config.OLLAMA_HOST}/api/generate"
 MODEL_NAME = "qwen3:4b-instruct"
 
 FLAG_LABELS = {
@@ -140,7 +142,8 @@ def confirm_risk(chunk_text, flag_num, timeout=60, save=True):
                 "model": MODEL_NAME,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0},
+                "options": {"temperature": 0, **config.OLLAMA_CONFIGS["confirm_risk"]},
+                "keep_alive": -1,
             },
             timeout=timeout,
         )
@@ -199,7 +202,8 @@ def summarize_passage(text, max_words=30, timeout=60, save=True):
                 "model": MODEL_NAME,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.2},
+                "options": {"temperature": 0.2, **config.OLLAMA_CONFIGS["summarize"]},
+                "keep_alive": -1,
             },
             timeout=timeout,
         )
@@ -258,7 +262,8 @@ def generate_recommendation(risk_grade, probability_12m, detected_signals, timeo
                 "model": MODEL_NAME,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.3},
+                "options": {"temperature": 0.3, **config.OLLAMA_CONFIGS["recommend"]},
+                "keep_alive": -1,
             },
             timeout=timeout,
         )

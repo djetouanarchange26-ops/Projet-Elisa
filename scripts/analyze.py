@@ -9,6 +9,7 @@ Usage depuis app.py :
 """
 
 import re
+import threading
 import time
 import numpy as np
 from pathlib import Path
@@ -25,6 +26,18 @@ from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS as _SIGNAL_PATTERNS
 # CHOIX: variables globales au module, chargées au 1er appel
 # ALT:   classe AnalyzeEngine avec __init__ → plus propre mais plus verbeux
 #        ex: engine = AnalyzeEngine(); result = engine.analyze(text)
+#
+# DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 0 — @st.cache_resource (suggéré par la
+# directive) est redondant ici, PAS ajouté : app.py n'appelle jamais
+# search.load_search_components()/load_cox_model() directement, seulement
+# via analyze() → _ensure_loaded(), qui joue déjà ce rôle (singleton au
+# niveau module, chargé une fois par process, comme @st.cache_resource
+# l'aurait fait). Empiler les deux chargerait les modèles en double sans
+# bénéfice. Seul vrai trou vérifié : sans verrou, deux premières requêtes
+# Streamlit concurrentes (plusieurs sessions sur le VPS, Phase 1 §1.3)
+# pouvaient toutes les deux voir _model is None et déclencher un chargement
+# en double → _lock corrige ça.
+_lock     = threading.Lock()
 _model    = None
 _index    = None
 _metadata = None
@@ -32,19 +45,24 @@ _cox      = None
 
 
 def _ensure_loaded():
-    """Charge tous les modèles en mémoire s'ils ne le sont pas."""
+    """Charge tous les modèles en mémoire s'ils ne le sont pas (une seule
+    fois par process, thread-safe)."""
     global _model, _index, _metadata, _cox
 
     if _model is not None:
         return  # déjà chargé
 
-    print("⏳ Chargement des modèles...")
-    t0 = time.time()
+    with _lock:
+        if _model is not None:
+            return  # chargé par un autre thread pendant l'attente du verrou
 
-    _model, _index, _metadata = search.load_search_components()
-    _cox = load_cox_model()
+        print("⏳ Chargement des modèles...")
+        t0 = time.time()
 
-    print(f"✅ Modèles chargés en {time.time() - t0:.1f}s")
+        _model, _index, _metadata = search.load_search_components()
+        _cox = load_cox_model()
+
+        print(f"✅ Modèles chargés en {time.time() - t0:.1f}s")
 
 
 # ============================================================================
@@ -150,13 +168,16 @@ def analyze(pdf_text, risk_thresholds=None, k=15, document_label="Document analy
     _ensure_loaded()
     t_start = time.time()
 
-    # --- Étape 1 : Flag scores via FAISS ---
-    flag_scores = search.get_flag_scores(
-        pdf_text, _model, _index, _metadata, k=k
-    )
-
-    # --- Étape 2 : Passages similaires (pattern library) ---
-    similar_passages = search.search_similar(
+    # --- Étape 1+2 : Flag scores + passages similaires (pattern library) ---
+    # AUDIT (2026-08-06, checklist.md) : un seul appel plutôt que
+    # get_flag_scores() + search_similar() séparés — les deux opéraient sur
+    # les mêmes chunks de CE document et recalculaient chacun tout le
+    # re-ranking cross-encoder indépendamment. Mesuré : ~46% du temps total
+    # d'analyze() gaspillé en travail dupliqué sur un document réel de 171
+    # chunks (CPU pur, aucun GPU sur cette machine — le re-ranking coûte
+    # cher). search.analyze_query() calcule le re-ranking une seule fois et
+    # en dérive les deux résultats.
+    flag_scores, similar_passages = search.analyze_query(
         pdf_text, _model, _index, _metadata, k=k
     )
 
