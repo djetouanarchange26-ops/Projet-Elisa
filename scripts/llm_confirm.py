@@ -27,29 +27,31 @@ risque, avant de le laisser contribuer au score de ce flag.
 CHOIX: un appel LLM par (chunk, flag candidat) — pas systématique sur tous
 les chunks — signals.py sert de filtre regex bon marché en amont pour ne
 solliciter le LLM que sur les cas topicalement pertinents.
-CHOIX: qwen3:4b-instruct, pas qwen3:4b — la variante "hybride" de Qwen3
-insiste pour produire des centaines de tokens de raisonnement interne même
-avec think:false ou le suffixe /no_think dans le prompt (mesuré : 25-95s/appel
-contre ~2s/appel à chaud pour -instruct, qui répond directement en 1 mot).
-FRAGILE: nécessite `ollama serve` actif sur localhost:11434 (démarré
-automatiquement par l'installeur Windows au login). Si injoignable,
-confirm_risk() retombe sur True — fail-open, comportement identique à avant
-l'ajout du filtre — plutôt que de faire planter l'analyse.
+CHOIX: qwen3:4b-instruct sur Ollama, pas qwen3:4b — la variante "hybride" de
+Qwen3 insiste pour produire des centaines de tokens de raisonnement interne
+même avec think:false ou le suffixe /no_think dans le prompt (mesuré :
+25-95s/appel contre ~2s/appel à chaud pour -instruct, qui répond directement
+en 1 mot).
+Le backend LLM (Ollama local ou cloud) et le modèle actif sont résolus par
+llm_backend.py via config.LLM_BACKEND/config.LLM_MODEL — voir ce module pour
+le détail. Fail-open partout : si le backend est injoignable, confirm_risk()
+retombe sur True — comportement identique à avant l'ajout du filtre — plutôt
+que de faire planter l'analyse.
 """
 
 import hashlib
 import json
+import logging
 import threading
 from pathlib import Path
 
-import requests
-
 import config
+import llm_backend
+
+logger = logging.getLogger(__name__)
 
 BASE = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE / "models" / "llm_confirm_cache.json"
-OLLAMA_URL = f"{config.OLLAMA_HOST}/api/generate"
-MODEL_NAME = "qwen3:4b-instruct"
 
 FLAG_LABELS = {
     1: "community opposition, involuntary displacement, or stakeholder/indigenous rights issues",
@@ -59,7 +61,16 @@ FLAG_LABELS = {
 
 _cache = None
 _cache_lock = threading.Lock()
-_ollama_unreachable_warned = False
+_llm_unreachable_warned = False
+
+
+def _warn_llm_unreachable(usage):
+    """N'affiche le warning qu'une fois par process (évite de noyer la
+    console sur un run avec ~50-80 appels LLM si le backend est down)."""
+    global _llm_unreachable_warned
+    if not _llm_unreachable_warned:
+        logger.warning(f"LLM {usage} injoignable — repli fail-open.")
+        _llm_unreachable_warned = True
 
 
 def _load_cache():
@@ -83,7 +94,11 @@ def _cache_key(chunk_text, flag_num):
     # FRAGILE: la clé inclut FLAG_LABELS[flag_num] — si la définition d'un
     # flag change, le cache s'invalide automatiquement pour ce flag au lieu
     # de servir un jugement basé sur une ancienne définition.
-    raw = f"{flag_num}:{FLAG_LABELS[flag_num]}:{chunk_text}"
+    # CHANTIER LLM BACKEND (2026-08-07) : inclut aussi backend+modèle actifs
+    # — une réponse Together/Qwen3.5-9B ne doit jamais être servie comme si
+    # elle venait d'Ollama/qwen3:4b-instruct (ou l'inverse). Même logique
+    # d'invalidation que pour la définition du flag ci-dessus.
+    raw = f"{config.LLM_BACKEND}:{config.LLM_MODEL}:{flag_num}:{FLAG_LABELS[flag_num]}:{chunk_text}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -119,7 +134,6 @@ def confirm_risk(chunk_text, flag_num, timeout=60, save=True):
     réécriture du fichier JSON entier sous _cache_lock à CHAQUE appel ne
     devienne un point de contention entre threads sur un run massif.
     """
-    global _ollama_unreachable_warned
     key = _cache_key(chunk_text, flag_num)
     with _cache_lock:
         cache = _load_cache()
@@ -135,26 +149,11 @@ def confirm_risk(chunk_text, flag_num, timeout=60, save=True):
         "Answer with exactly one word: RISK or CLEAN."
     )
 
-    try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0, **config.OLLAMA_CONFIGS["confirm_risk"]},
-                "keep_alive": -1,
-            },
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        answer = resp.json()["response"].strip().upper()
-        result = answer.startswith("RISK")
-    except Exception as e:
-        if not _ollama_unreachable_warned:
-            print(f"  [WARN] LLM de confirmation injoignable ({e}) — filtre polarité désactivé (fail-open).")
-            _ollama_unreachable_warned = True
+    response = llm_backend.call_llm(prompt, config_key="confirm_risk", temperature=0, timeout=timeout)
+    if response is None:
+        _warn_llm_unreachable("de confirmation — filtre polarité désactivé")
         return True
+    result = response.strip().upper().startswith("RISK")
 
     with _cache_lock:
         cache[key] = result
@@ -177,10 +176,10 @@ def summarize_passage(text, max_words=30, timeout=60, save=True):
     CHOIX: cache séparé de celui de confirm_risk (clé construite localement,
     pas via _cache_key) — même fichier disque (models/llm_confirm_cache.json),
     préfixe "summarize:" pour éviter toute collision avec les clés de
-    confirm_risk (qui n'ont jamais ce préfixe).
+    confirm_risk (qui n'ont jamais ce préfixe). Préfixe aussi backend+modèle,
+    même raison que dans _cache_key (2026-08-07, cf. plus haut dans le fichier).
     """
-    global _ollama_unreachable_warned
-    key = hashlib.sha256(f"summarize:{text}".encode("utf-8")).hexdigest()
+    key = hashlib.sha256(f"{config.LLM_BACKEND}:{config.LLM_MODEL}:summarize:{text}".encode("utf-8")).hexdigest()
     with _cache_lock:
         cache = _load_cache()
         if key in cache:
@@ -195,26 +194,10 @@ def summarize_passage(text, max_words=30, timeout=60, save=True):
         f"Passage:\n\"{text}\"\n\nSummary:"
     )
 
-    try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.2, **config.OLLAMA_CONFIGS["summarize"]},
-                "keep_alive": -1,
-            },
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        summary = resp.json()["response"].strip().strip('"')
-        if not summary:
-            summary = fallback
-    except Exception as e:
-        if not _ollama_unreachable_warned:
-            print(f"  [WARN] LLM de résumé injoignable ({e}) — repli sur extrait brut.")
-            _ollama_unreachable_warned = True
+    response = llm_backend.call_llm(prompt, config_key="summarize", temperature=0.2, timeout=timeout)
+    summary = response.strip().strip('"') if response else ""
+    if not summary:
+        _warn_llm_unreachable("de résumé — repli sur extrait brut")
         return fallback
 
     with _cache_lock:
@@ -230,14 +213,13 @@ def generate_recommendation(risk_grade, probability_12m, detected_signals, timeo
     RÉELLEMENT détectés dans le document (pas un template fixe par grade,
     voir RECOMMENDATION_BY_GRADE dans app.py — ancien comportement).
 
-    Retourne None si Ollama est injoignable ou répond vide — l'appelant
-    (analyze.py/app.py) retombe alors sur le template par grade (fail-open),
-    plutôt qu'un texte LLM à moitié fiable.
+    Retourne None si le backend LLM est injoignable ou répond vide —
+    l'appelant (analyze.py/app.py) retombe alors sur le template par grade
+    (fail-open), plutôt qu'un texte LLM à moitié fiable.
     """
-    global _ollama_unreachable_warned
     signal_names = sorted({s["signal"] for s in detected_signals})[:6]  # borne le prompt
     cache_input = f"{risk_grade}:{round(probability_12m, 3)}:{signal_names}"
-    key = hashlib.sha256(f"recommend:{cache_input}".encode("utf-8")).hexdigest()
+    key = hashlib.sha256(f"{config.LLM_BACKEND}:{config.LLM_MODEL}:recommend:{cache_input}".encode("utf-8")).hexdigest()
     with _cache_lock:
         cache = _load_cache()
         if key in cache:
@@ -255,26 +237,10 @@ def generate_recommendation(risk_grade, probability_12m, detected_signals, timeo
         "generic language. No preamble, no quotes."
     )
 
-    try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.3, **config.OLLAMA_CONFIGS["recommend"]},
-                "keep_alive": -1,
-            },
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        text = resp.json()["response"].strip().strip('"')
-        if not text:
-            return None
-    except Exception as e:
-        if not _ollama_unreachable_warned:
-            print(f"  [WARN] LLM de recommandation injoignable ({e}) — repli sur template par grade.")
-            _ollama_unreachable_warned = True
+    response = llm_backend.call_llm(prompt, config_key="recommend", temperature=0.3, timeout=timeout)
+    text = response.strip().strip('"') if response else ""
+    if not text:
+        _warn_llm_unreachable("de recommandation — repli sur template par grade")
         return None
 
     with _cache_lock:

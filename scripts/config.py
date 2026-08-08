@@ -67,3 +67,36 @@ OLLAMA_CONFIGS = {
     "deep_extract":    {"num_predict": 180, "num_ctx": 1024},
     "deep_synthesize": {"num_predict": 450, "num_ctx": 2048},
 }
+
+# CHANTIER LLM BACKEND (2026-08-07, checklist.md) — abstraction Ollama local
+# / cloud, cf. llm_backend.py. Exception explicite au sprint "pas de nouveau
+# modèle/pas de fix perf avant le 25 août" : dégradation Ollama sous charge
+# (~17 -> <7 tok/s après ~50 appels) bloquait une démo live.
+#
+# CHOIX: défaut "ollama", PAS "together" — contrairement à la proposition
+# initiale — pour ne rien changer aux déploiements existants (VPS, autres
+# dev sans clé API) tant que LLM_BACKEND=together n'est pas mis
+# explicitement dans l'environnement (poste de démo).
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama").strip().lower()
+
+# Modèle par défaut selon le backend actif si LLM_MODEL n'est pas fourni.
+# Qwen/Qwen3.5-9B choisi (pas Qwen3.7 Max) : Max a le "deep thinking" activé
+# par défaut sur Together, qui casserait le parsing (confirm_risk attend un
+# mot, deep_analysis attend un format ligne-par-ligne, pas un raisonnement
+# visible) — même famille de bug que qwen3:4b vs qwen3:4b-instruct ci-dessous.
+LLM_MODEL_BY_BACKEND = {
+    "ollama":   "qwen3:4b-instruct",
+    "together": "Qwen/Qwen3.5-9B",
+}
+LLM_MODEL = os.environ.get("LLM_MODEL") or LLM_MODEL_BY_BACKEND.get(LLM_BACKEND, "qwen3:4b-instruct")
+
+TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "")
+
+# Backend de repli si LLM_BACKEND échoue (down, rate-limit, clé invalide) —
+# fail-open à un niveau au-dessus du fail-open par appel (cf. llm_backend.py).
+# "" désactive le fallback.
+LLM_FALLBACK = os.environ.get("LLM_FALLBACK", "ollama").strip().lower()
+
+# Requêtes/seconde max vers un backend cloud — ignoré pour "ollama" (pas de
+# rate limit externe en local).
+LLM_RATE_LIMIT = float(os.environ.get("LLM_RATE_LIMIT", "10"))

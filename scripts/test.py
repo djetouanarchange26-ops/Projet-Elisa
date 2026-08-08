@@ -109,6 +109,58 @@ def test_unit():
               f"C-index = {cox.concordance_index_:.3f}",
               warning_only=True)
 
+    # 1.5 llm_backend — abstraction backend LLM (2026-08-07, checklist.md).
+    # Pas d'appel réseau réel ici (pas de dépendance à une clé API/à Ollama
+    # actif) : on monkey-patche llm_backend._dispatch pour vérifier le
+    # contrat (fail-open, fallback, plafond de longueur) indépendamment du
+    # backend réellement configuré.
+    import config
+    import llm_backend
+
+    _orig_dispatch = llm_backend._dispatch
+
+    def _always_fails(*a, **kw):
+        raise RuntimeError("backend simulé injoignable")
+
+    llm_backend._dispatch = _always_fails
+    try:
+        result = llm_backend.call_llm("test", config_key="confirm_risk", timeout=1)
+        _test("llm_backend.call_llm fail-open (backend injoignable -> None, jamais d'exception)",
+              result is None,
+              f"Résultat inattendu : {result!r}")
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+
+    _orig_backend, _orig_fallback = config.LLM_BACKEND, config.LLM_FALLBACK
+    config.LLM_BACKEND, config.LLM_FALLBACK = "together", "ollama"
+    calls = []
+
+    def _fail_then_succeed(backend, prompt, model, options, timeout):
+        calls.append(backend)
+        if backend == "together":
+            raise RuntimeError("primaire simulé injoignable")
+        return "reponse de secours"
+
+    llm_backend._dispatch = _fail_then_succeed
+    try:
+        result = llm_backend.call_llm("test", config_key="confirm_risk", timeout=1)
+        _test("llm_backend.call_llm bascule sur LLM_FALLBACK si le backend principal échoue",
+              result == "reponse de secours" and calls == ["together", "ollama"],
+              f"Résultat={result!r}, backends appelés={calls}")
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+        config.LLM_BACKEND, config.LLM_FALLBACK = _orig_backend, _orig_fallback
+
+    opts_capped = llm_backend._resolve_options("confirm_risk", 0.0)
+    _test("_resolve_options applique le plafond num_predict pour un config_key connu",
+          opts_capped["max_tokens"] == config.OLLAMA_CONFIGS["confirm_risk"]["num_predict"],
+          f"max_tokens={opts_capped['max_tokens']}")
+
+    opts_uncapped = llm_backend._resolve_options(None, 0.0)
+    _test("_resolve_options NE plafonne PAS quand config_key=None (invariant Pass 2 deep_analysis)",
+          opts_uncapped["max_tokens"] is None,
+          f"max_tokens={opts_uncapped['max_tokens']}")
+
 
 # ============================================================================
 # 2. TESTS D'INTÉGRATION

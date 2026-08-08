@@ -32,20 +32,20 @@ une exception — run_deep_analysis() ne plante jamais, cf. son docstring.
 
 import hashlib
 import json
+import logging
 import re
 import threading
 from pathlib import Path
 
-import requests
-
 import config
+import llm_backend
 from chunk_metadata import classify_section_type
 from search import chunk_text
 
+logger = logging.getLogger(__name__)
+
 BASE = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE / "models" / "deep_analysis_cache.json"
-OLLAMA_URL = f"{config.OLLAMA_HOST}/api/generate"
-MODEL_NAME = "qwen3:4b-instruct"
 
 # SEUIL: borne le nombre de chunks soumis à la Pass 1 — un gros document
 # (100+ pages) déclencherait sinon autant d'appels LLM séquentiels que de
@@ -56,7 +56,7 @@ MAX_CHUNKS_PASS1 = 20
 
 _cache = None
 _cache_lock = threading.Lock()
-_ollama_unreachable_warned = False
+_llm_unreachable_warned = False
 
 
 # ============================================================================
@@ -80,7 +80,11 @@ def _save_cache():
 
 
 def _cache_key(pass_name, text):
-    return hashlib.sha256(f"{pass_name}:{text}".encode("utf-8")).hexdigest()
+    # CHANTIER LLM BACKEND (2026-08-07) : inclut backend+modèle actifs — une
+    # réponse Together/Qwen3.5-9B ne doit jamais être servie comme si elle
+    # venait d'Ollama/qwen3:4b-instruct (ou l'inverse), même logique que le
+    # cache de llm_confirm.py.
+    return hashlib.sha256(f"{config.LLM_BACKEND}:{config.LLM_MODEL}:{pass_name}:{text}".encode("utf-8")).hexdigest()
 
 
 # DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 0 — Pass 1 (extraction courte, 3 lignes
@@ -94,36 +98,28 @@ def _cache_key(pass_name, text):
 _CONFIG_KEY_BY_PASS = {"pass1": "deep_extract", "pass3": "deep_synthesize"}
 
 
-def _call_ollama(prompt, pass_name, cache_input, temperature=0.0, timeout=60):
-    """Appel Ollama générique avec cache disque — retourne le texte de
-    réponse brut, ou None si Ollama est injoignable/répond vide (fail-open,
-    même logique que llm_confirm.confirm_risk)."""
-    global _ollama_unreachable_warned
+def _call_llm(prompt, pass_name, cache_input, temperature=0.0, timeout=60):
+    """Appel LLM générique avec cache disque — retourne le texte de réponse
+    brut, ou None si le backend est injoignable/répond vide (fail-open, même
+    logique que llm_confirm.confirm_risk). Le backend actif (Ollama local ou
+    cloud) est résolu par llm_backend.py via config.LLM_BACKEND.
+
+    config_key=None pour pass_name="pass2" (absent de _CONFIG_KEY_BY_PASS) :
+    volontaire, voir le commentaire Tier 0 au-dessus de _CONFIG_KEY_BY_PASS —
+    Pass 2 ne doit jamais avoir de plafond de longueur de réponse."""
+    global _llm_unreachable_warned
     key = _cache_key(pass_name, cache_input)
     with _cache_lock:
         cache = _load_cache()
         if key in cache:
             return cache[key]
 
-    options = {"temperature": temperature}
     config_key = _CONFIG_KEY_BY_PASS.get(pass_name)
-    if config_key:
-        options.update(config.OLLAMA_CONFIGS[config_key])
-    try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={"model": MODEL_NAME, "prompt": prompt, "stream": False,
-                  "options": options, "keep_alive": -1},
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        text = resp.json()["response"].strip()
-        if not text:
-            return None
-    except Exception as e:
-        if not _ollama_unreachable_warned:
-            print(f"  [WARN] deep_analysis: LLM injoignable ({e}) — passe ignorée (fail-open).")
-            _ollama_unreachable_warned = True
+    text = llm_backend.call_llm(prompt, config_key=config_key, temperature=temperature, timeout=timeout)
+    if not text:
+        if not _llm_unreachable_warned:
+            logger.warning("deep_analysis: LLM injoignable — passe(s) ignorée(s) (fail-open).")
+            _llm_unreachable_warned = True
         return None
 
     with _cache_lock:
@@ -212,9 +208,9 @@ def run_pass1(chunks):
     findings = []
     for i, chunk in enumerate(chunks[:MAX_CHUNKS_PASS1]):
         prompt = _PASS1_PROMPT_TEMPLATE.format(chunk_text=chunk)
-        response = _call_ollama(prompt, "pass1", chunk, temperature=0.0)
+        response = _call_llm(prompt, "pass1", chunk, temperature=0.0)
         if response is None:
-            continue  # Ollama injoignable — ce chunk ne contribue pas, pas d'exception
+            continue  # LLM injoignable — ce chunk ne contribue pas, pas d'exception
         parsed = _parse_pass1_response(response)
         parsed["chunk_index"] = i
         findings.append(parsed)
@@ -305,7 +301,7 @@ def run_pass2(chunks, project_type):
 
     prompt = _PASS2_PROMPT_TEMPLATE.format(themes=themes, project_type=project_type)
     cache_input = f"{project_type}:{themes}"
-    response = _call_ollama(prompt, "pass2", cache_input, temperature=0.0)
+    response = _call_llm(prompt, "pass2", cache_input, temperature=0.0)
     if response is None:
         return None  # échec de la passe — distinct de [] ("AUCUNE OMISSION" confirmée)
 
@@ -401,12 +397,15 @@ def run_pass3(project_name, pass1_findings, omissions, risk_grade, probability_1
     }, sort_keys=True)
     # BUG CORRIGÉ (2026-08-06, audit perf checklist.md) : deep_synthesize
     # (num_predict=450, cf. config.py) peut légitimement approcher ou
-    # dépasser le timeout par défaut de _call_ollama (60s) sur cette machine
-    # CPU (~7-10 tokens/s mesuré sous charge) — mesuré : timeout réel
-    # atteint sur cette passe précise après un run à froid avec ~50 appels
-    # LLM déjà enchaînés. Le num_predict a été augmenté (fix troncature de
-    # la veille) sans augmenter ce timeout en conséquence — corrigé ici.
-    return _call_ollama(prompt, "pass3", cache_input, temperature=0.2, timeout=150)
+    # dépasser le timeout par défaut de _call_llm (60s) sur Ollama en CPU
+    # (~7-10 tokens/s mesuré sous charge) — mesuré : timeout réel atteint sur
+    # cette passe précise après un run à froid avec ~50 appels LLM déjà
+    # enchaînés. Le num_predict a été augmenté (fix troncature de la veille)
+    # sans augmenter ce timeout en conséquence — corrigé ici. Conservé tel
+    # quel après le passage à llm_backend.py (2026-08-07) : un backend cloud
+    # plus rapide n'en a pas besoin, mais ne pas le réduire ne coûte rien et
+    # garde une marge si LLM_FALLBACK retombe sur Ollama.
+    return _call_llm(prompt, "pass3", cache_input, temperature=0.2, timeout=150)
 
 
 # ============================================================================

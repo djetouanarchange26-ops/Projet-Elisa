@@ -28,6 +28,14 @@ services:
       - ./corpus:/app/corpus
     environment:
       - OLLAMA_HOST=http://ollama:11434
+      # CHANTIER LLM BACKEND (2026-08-07, checklist.md) — voir
+      # scripts/llm_backend.py. ${VAR:-defaut} lu depuis le .env à la racine
+      # (gitignored) par docker-compose, pas de clé en dur ici.
+      - LLM_BACKEND=${LLM_BACKEND:-ollama}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - LLM_FALLBACK=${LLM_FALLBACK:-ollama}
+      - LLM_RATE_LIMIT=${LLM_RATE_LIMIT:-10}
     depends_on:
       ollama:
         condition: service_healthy
