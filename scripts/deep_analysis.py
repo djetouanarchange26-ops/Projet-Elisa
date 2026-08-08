@@ -353,7 +353,7 @@ Voici les éléments détectés dans le rapport du projet "{project_name}" :
 - Engagements sans cible chiffrée : {vague_commitments}
 - Formulations évasives détectées : {evasive_phrases}
 - Sujets ESG critiques non couverts : {omissions}
-- Score de risque du modèle : {risk_grade} ({probability_12m:.0%} à 12 mois)
+- Grade de risque du modèle : {risk_grade}
 - Signaux détectés : {detected_signals}
 
 Rédige en 3-5 phrases :
@@ -366,12 +366,17 @@ def _format_list_for_prompt(items, empty_label):
     return "; ".join(items) if items else empty_label
 
 
-def run_pass3(project_name, pass1_findings, omissions, risk_grade, probability_12m, detected_signals):
+def run_pass3(project_name, pass1_findings, omissions, risk_grade, detected_signals):
     """Synthèse d'alerte — un seul appel LLM sur les findings déjà agrégés
-    (Pass 1 + Pass 2 + la prédiction Cox existante). Retourne une chaîne
-    (3-5 phrases) ou None si la passe échoue (Ollama injoignable/réponse
-    vide) — l'appelant retombe alors sur le "recommendation" existant
-    (llm_confirm.generate_recommendation), cf. run_deep_analysis."""
+    (Pass 1 + Pass 2 + le grade ESG). Retourne une chaîne (3-5 phrases) ou
+    None si la passe échoue (LLM injoignable/réponse vide) — l'appelant
+    retombe alors sur le "recommendation" existant
+    (llm_confirm.generate_recommendation), cf. run_deep_analysis.
+
+    CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) : signature adaptée pour
+    ne plus prendre probability_12m — le Cox est retiré (model.py), analyze.py
+    ne calcule plus de probabilité d'événement, juste un risk_grade par
+    règle (model.compute_grade)."""
     incidents = [f["incident"]["description"] for f in pass1_findings
                  if f.get("incident", {}).get("present") and f["incident"]["description"]]
     vague_commitments = [f["engagement"]["description"] for f in pass1_findings
@@ -388,12 +393,11 @@ def run_pass3(project_name, pass1_findings, omissions, risk_grade, probability_1
         evasive_phrases=_format_list_for_prompt(evasive, "aucune"),
         omissions=_format_list_for_prompt(omissions or [], "aucune"),
         risk_grade=risk_grade,
-        probability_12m=probability_12m,
         detected_signals=_format_list_for_prompt(signal_names, "aucun signal spécifique"),
     )
     cache_input = json.dumps({
         "p": project_name, "i": incidents, "v": vague_commitments, "e": evasive,
-        "o": omissions, "g": risk_grade, "pr": round(probability_12m, 3), "s": signal_names,
+        "o": omissions, "g": risk_grade, "s": signal_names,
     }, sort_keys=True)
     # BUG CORRIGÉ (2026-08-06, audit perf checklist.md) : deep_synthesize
     # (num_predict=450, cf. config.py) peut légitimement approcher ou
@@ -412,8 +416,11 @@ def run_pass3(project_name, pass1_findings, omissions, risk_grade, probability_1
 # ORCHESTRATEUR
 # ============================================================================
 
-def run_deep_analysis(pdf_text, project_name, risk_grade, probability_12m, detected_signals):
+def run_deep_analysis(pdf_text, project_name, risk_grade, detected_signals):
     """Pipeline complète Pass 1 -> Pass 2 -> Pass 3.
+
+    CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) : signature adaptée pour
+    ne plus prendre probability_12m — voir run_pass3.
 
     Ne lève JAMAIS d'exception : chaque passe peut échouer indépendamment
     (Ollama injoignable, réponse non parsable) sans empêcher les autres de
@@ -451,7 +458,7 @@ def run_deep_analysis(pdf_text, project_name, risk_grade, probability_12m, detec
 
     try:
         synthesis = run_pass3(project_name, pass1_findings, omissions, risk_grade,
-                               probability_12m, detected_signals)
+                               detected_signals)
     except Exception as e:
         print(f"  [WARN] deep_analysis Pass 3 : erreur inattendue ({e}) — résultat vide pour cette passe.")
         synthesis = None
@@ -474,7 +481,7 @@ if __name__ == "__main__":
     The company aims to explore emission reduction opportunities in due course.
     """
     result = run_deep_analysis(
-        test_text, "Test Project", risk_grade="B", probability_12m=0.42,
+        test_text, "Test Project", risk_grade="B",
         detected_signals=[{"signal": "community opposition"}, {"signal": "ESAP delays"}],
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))

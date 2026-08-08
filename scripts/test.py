@@ -26,7 +26,6 @@ CHUNKS_PATH      = BASE / "data/processed/chunks.csv"
 EMBEDDING_PATH   = BASE / "models/embeddings.npy"
 METADATA_PATH    = BASE / "models/chunks_metadata.pkl"
 FAISS_INDEX_PATH = BASE / "models/faiss_index.bin"
-COX_MODEL_PATH   = BASE / "models/cox_model.pkl"
 ANNOTATIONS_PATH = BASE / "data/raw/corpus_cao_ifc.xlsx"
 
 # Compteurs globaux
@@ -60,7 +59,6 @@ def test_unit():
     _test("embeddings.npy existe",  EMBEDDING_PATH.exists(),   f"Manquant : {EMBEDDING_PATH}")
     _test("metadata.pkl existe",    METADATA_PATH.exists(),    f"Manquant : {METADATA_PATH}")
     _test("faiss_index.bin existe", FAISS_INDEX_PATH.exists(), f"Manquant : {FAISS_INDEX_PATH}")
-    _test("cox_model.pkl existe",   COX_MODEL_PATH.exists(),   f"Manquant : {COX_MODEL_PATH}")
     _test("annotations existe",     ANNOTATIONS_PATH.exists(), f"Manquant : {ANNOTATIONS_PATH}")
 
     # 1.2 Intégrité chunks.csv
@@ -93,21 +91,25 @@ def test_unit():
               np.allclose(norms, 1.0, atol=0.01),
               f"Norme moyenne = {norms.mean():.3f}")
 
-    # 1.4 Modèle Cox
-    if COX_MODEL_PATH.exists():
-        from model import load_cox_model
-        cox = load_cox_model()
-        _test("Cox a 3 features",
-              len(cox.params_) == 3,
-              f"Features : {list(cox.params_.index)}")
-        _test("C-index > 0.55 (mieux que le hasard)",
-              cox.concordance_index_ > 0.55,
-              f"C-index = {cox.concordance_index_:.3f}",
-              warning_only=True)
-        _test("C-index > 0.6 (acceptable MVP)",
-              cox.concordance_index_ > 0.6,
-              f"C-index = {cox.concordance_index_:.3f}",
-              warning_only=True)
+    # 1.4 Grade ESG par règle (CHANTIER SIMPLIFICATION PIPELINE, 2026-08-08 —
+    # remplace le Cox, retiré : coefficients flag2/flag3 non significatifs
+    # sur 46 projets, décalage train/serve non résolu, cf. checklist.md).
+    from model import compute_grade, DEFAULT_RISK_THRESHOLDS
+
+    _test("DEFAULT_RISK_THRESHOLDS strictement croissant",
+          all(DEFAULT_RISK_THRESHOLDS[i][0] < DEFAULT_RISK_THRESHOLDS[i + 1][0]
+              for i in range(len(DEFAULT_RISK_THRESHOLDS) - 1)),
+          f"Seuils : {DEFAULT_RISK_THRESHOLDS}")
+
+    _low = compute_grade({"flag1_community": 5, "flag2_pollution": 5, "flag3_compliance": 5})
+    _test("Score bas -> grade D (Vigilance)",
+          _low["risk_grade"] == "D" and _low["risk_label"] == "Vigilance",
+          f"Obtenu : {_low}")
+
+    _high = compute_grade({"flag1_community": 90, "flag2_pollution": 5, "flag3_compliance": 5})
+    _test("Score haut sur un seul flag -> grade A (Escalade), max() pas moyenne",
+          _high["risk_grade"] == "A" and _high["risk_label"] == "Escalade",
+          f"Obtenu : {_high}")
 
     # 1.5 llm_backend — abstraction backend LLM (2026-08-07, checklist.md).
     # Pas d'appel réseau réel ici (pas de dépendance à une clé API/à Ollama
@@ -171,11 +173,10 @@ def test_integration():
 
     try:
         import search
-        from model import load_cox_model, predict_risk
+        from model import compute_grade
         from analyze import analyze
 
         model, index, metadata = search.load_search_components()
-        cox = load_cox_model()
 
         # 2.1 Flag scores
         test_text = """
@@ -192,14 +193,14 @@ def test_integration():
               f"f1={scores['flag1_community']:.1f} vs f2={scores['flag2_pollution']:.1f}",
               warning_only=True)
 
-        # 2.2 Prédiction Cox
-        pred = predict_risk(scores, cox)
-        expected_keys = ["probability_12m", "risk_label", "risk_grade", "survival_curve"]
+        # 2.2 Grade ESG (compute_grade, remplace le Cox)
+        pred = compute_grade(scores)
+        expected_keys = ["risk_score", "risk_label", "risk_grade"]
         _test("Prédiction toutes les clés",
               all(k in pred for k in expected_keys))
-        _test("Probabilité ∈ [0, 1]",
-              0 <= pred["probability_12m"] <= 1,
-              f"prob = {pred['probability_12m']}")
+        _test("Score ∈ [0, 100]",
+              0 <= pred["risk_score"] <= 100,
+              f"score = {pred['risk_score']}")
         _test("Grade valide",
               pred["risk_grade"] in ["A", "B", "C", "D"],
               f"grade = {pred['risk_grade']}")
@@ -275,21 +276,24 @@ def test_business():
         r3 = analyze(text_biodiversity)
         r4 = analyze(text_clean)
 
-        # Résumé visuel
+        # Résumé visuel (CHANTIER SIMPLIFICATION PIPELINE, 2026-08-08 : plus de
+        # probability_12m/Cox — risk_score = max(flag_scores), 0-100)
         print(f"\n  Cas 1 (Community Opposition) : {r1['prediction']['risk_grade']} "
-              f"({r1['prediction']['risk_label']}) — prob={r1['prediction']['probability_12m']:.2%}")
+              f"({r1['prediction']['risk_label']}) — score={r1['prediction']['risk_score']}/100")
         print(f"  Cas 2 (ESAP Delays)          : {r2['prediction']['risk_grade']} "
-              f"({r2['prediction']['risk_label']}) — prob={r2['prediction']['probability_12m']:.2%}")
+              f"({r2['prediction']['risk_label']}) — score={r2['prediction']['risk_score']}/100")
         print(f"  Cas 3 (Biodiversity Risk)    : {r3['prediction']['risk_grade']} "
-              f"({r3['prediction']['risk_label']}) — prob={r3['prediction']['probability_12m']:.2%}")
+              f"({r3['prediction']['risk_label']}) — score={r3['prediction']['risk_score']}/100")
         print(f"  Cas 4 (Projet propre)        : {r4['prediction']['risk_grade']} "
-              f"({r4['prediction']['risk_label']}) — prob={r4['prediction']['probability_12m']:.2%}")
+              f"({r4['prediction']['risk_label']}) — score={r4['prediction']['risk_score']}/100")
 
         # Vérifications
         _test("Cas 1 (risque) > Cas 4 (propre)",
-              r1["prediction"]["probability_12m"] > r4["prediction"]["probability_12m"],
-              f"{r1['prediction']['probability_12m']:.2f} vs {r4['prediction']['probability_12m']:.2f}")
+              r1["prediction"]["risk_score"] > r4["prediction"]["risk_score"],
+              f"{r1['prediction']['risk_score']} vs {r4['prediction']['risk_score']}")
 
+        # Convention conservée (2026-08-08) : A = pire (Escalade), D = meilleur
+        # (Vigilance) — même sens qu'avec le Cox, cf. model.py.
         _test("Cas 1 = grade A ou B",
               r1["prediction"]["risk_grade"] in ["A", "B"],
               f"Grade = {r1['prediction']['risk_grade']}",
@@ -305,14 +309,14 @@ def test_business():
               "Aucun signal — vérifier les mots-clés dans analyze._extract_signals")
 
         # Ordonnancement global
-        probs = [r1["prediction"]["probability_12m"],
-                 r2["prediction"]["probability_12m"],
-                 r3["prediction"]["probability_12m"],
-                 r4["prediction"]["probability_12m"]]
-        _test("Cas propre a la probabilité la plus basse",
-              probs[3] == min(probs),
-              f"Probas : community={probs[0]:.2f} esap={probs[1]:.2f} "
-              f"bio={probs[2]:.2f} propre={probs[3]:.2f}",
+        scores = [r1["prediction"]["risk_score"],
+                  r2["prediction"]["risk_score"],
+                  r3["prediction"]["risk_score"],
+                  r4["prediction"]["risk_score"]]
+        _test("Cas propre a le score le plus bas",
+              scores[3] == min(scores),
+              f"Scores : community={scores[0]} esap={scores[1]} "
+              f"bio={scores[2]} propre={scores[3]}",
               warning_only=True)
 
     except Exception as e:

@@ -18,7 +18,7 @@ from collections import defaultdict
 import search
 import llm_confirm
 import deep_analysis
-from model import load_cox_model
+from model import compute_grade
 from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS as _SIGNAL_PATTERNS
 
 
@@ -29,25 +29,26 @@ from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS as _SIGNAL_PATTERNS
 #
 # DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 0 — @st.cache_resource (suggéré par la
 # directive) est redondant ici, PAS ajouté : app.py n'appelle jamais
-# search.load_search_components()/load_cox_model() directement, seulement
-# via analyze() → _ensure_loaded(), qui joue déjà ce rôle (singleton au
-# niveau module, chargé une fois par process, comme @st.cache_resource
-# l'aurait fait). Empiler les deux chargerait les modèles en double sans
-# bénéfice. Seul vrai trou vérifié : sans verrou, deux premières requêtes
-# Streamlit concurrentes (plusieurs sessions sur le VPS, Phase 1 §1.3)
-# pouvaient toutes les deux voir _model is None et déclencher un chargement
-# en double → _lock corrige ça.
+# search.load_search_components() directement, seulement via analyze() →
+# _ensure_loaded(), qui joue déjà ce rôle (singleton au niveau module,
+# chargé une fois par process, comme @st.cache_resource l'aurait fait).
+# Empiler les deux chargerait les modèles en double sans bénéfice. Seul vrai
+# trou vérifié : sans verrou, deux premières requêtes Streamlit concurrentes
+# (plusieurs sessions sur le VPS, Phase 1 §1.3) pouvaient toutes les deux
+# voir _model is None et déclencher un chargement en double → _lock corrige
+# ça.
+# CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) : plus de _cox — compute_grade()
+# (model.py) n'a pas de modèle à charger, juste des seuils (DEFAULT_RISK_THRESHOLDS).
 _lock     = threading.Lock()
 _model    = None
 _index    = None
 _metadata = None
-_cox      = None
 
 
 def _ensure_loaded():
     """Charge tous les modèles en mémoire s'ils ne le sont pas (une seule
     fois par process, thread-safe)."""
-    global _model, _index, _metadata, _cox
+    global _model, _index, _metadata
 
     if _model is not None:
         return  # déjà chargé
@@ -60,7 +61,6 @@ def _ensure_loaded():
         t0 = time.time()
 
         _model, _index, _metadata = search.load_search_components()
-        _cox = load_cox_model()
 
         print(f"✅ Modèles chargés en {time.time() - t0:.1f}s")
 
@@ -138,7 +138,7 @@ def analyze(pdf_text, risk_thresholds=None, k=15, document_label="Document analy
 
     Paramètres :
       pdf_text        : str — texte extrait du PDF uploadé (via ingest.py)
-      risk_thresholds : voir model.predict_risk — permet à l'UI (Settings)
+      risk_thresholds : voir model.compute_grade — permet à l'UI (Settings)
                         de surcharger les seuils de grade sans redémarrer.
       k               : nombre de voisins FAISS interrogés par chunk (voir
                         search.get_flag_scores/search_similar) — réglable
@@ -150,7 +150,11 @@ def analyze(pdf_text, risk_thresholds=None, k=15, document_label="Document analy
     Retourne :
       {
         "flag_scores":        {"flag1_community": 72.3, ...},
-        "prediction":         {"probability_12m": 0.63, "risk_label": "Alerte", ...},
+        "prediction":         {"risk_score": 72, "risk_label": "Alerte",
+                                "risk_grade": "B"} — voir model.compute_grade
+                                (CHANTIER SIMPLIFICATION PIPELINE, 2026-08-08 :
+                                plus de probability_12m/survival_curve, le
+                                Cox est retiré).
         "similar_passages":   [{"text": ..., "project_name": ..., ...}, ...],
         "detected_signals":   [{"signal": ..., "confidence": ..., ...}, ...],
         "signal_spans":       [(start, end, flag_num), ...],
@@ -172,21 +176,18 @@ def analyze(pdf_text, risk_thresholds=None, k=15, document_label="Document analy
     # AUDIT (2026-08-06, checklist.md) : un seul appel plutôt que
     # get_flag_scores() + search_similar() séparés — les deux opéraient sur
     # les mêmes chunks de CE document et recalculaient chacun tout le
-    # re-ranking cross-encoder indépendamment. Mesuré : ~46% du temps total
-    # d'analyze() gaspillé en travail dupliqué sur un document réel de 171
-    # chunks (CPU pur, aucun GPU sur cette machine — le re-ranking coûte
-    # cher). search.analyze_query() calcule le re-ranking une seule fois et
-    # en dérive les deux résultats.
+    # re-ranking indépendamment. Mesuré : ~46% du temps total d'analyze()
+    # gaspillé en travail dupliqué sur un document réel de 171 chunks.
+    # search.analyze_query() calcule le scoring une seule fois et en dérive
+    # les deux résultats.
     flag_scores, similar_passages = search.analyze_query(
         pdf_text, _model, _index, _metadata, k=k
     )
 
-    # --- Étape 3 : Prédiction Cox ---
-    from model import predict_risk
-    prediction = predict_risk(
-        flag_scores, _cox, horizon_months=12,        # SEUIL: horizon
-        risk_thresholds=risk_thresholds,
-    )
+    # --- Étape 3 : Grade ESG (CHANTIER SIMPLIFICATION PIPELINE, 2026-08-08) ---
+    # Remplace la prédiction Cox — plus de modèle à charger, juste des seuils
+    # sur max(flag_scores), cf. model.compute_grade.
+    prediction = compute_grade(flag_scores, risk_thresholds=risk_thresholds)
 
     # --- Étape 4 : Signaux détectés (dans le document uploadé lui-même) ---
     detected_signals, signal_spans = _find_signals_in_document(pdf_text)
@@ -194,20 +195,20 @@ def analyze(pdf_text, risk_thresholds=None, k=15, document_label="Document analy
     # --- Étape 5 : Recommandation contextualisée ---
     # CHOIX: basée sur les signaux réellement détectés (post-filtre LLM),
     # pas un template fixe par grade — voir llm_confirm.generate_recommendation.
-    # None si Ollama injoignable → app.py retombe sur RECOMMENDATION_BY_GRADE.
+    # None si le LLM est injoignable → app.py retombe sur RECOMMENDATION_BY_GRADE.
     recommendation = llm_confirm.generate_recommendation(
-        prediction["risk_grade"], prediction["probability_12m"], detected_signals,
+        prediction["risk_grade"], detected_signals,
     )
 
     # --- Étape 6 : Pipeline d'analyse LLM multi-pass (CHANTIER 3) ---
     # CHOIX: après la prédiction/les signaux — la Pass 3 (synthèse) en a
     # besoin. Ne lève jamais d'exception (cf. deep_analysis.run_deep_analysis) :
     # dégradé gracieusement à {"enabled": False, ...} si désactivé, ou à des
-    # champs None/[] passe par passe si Ollama est injoignable en cours de
+    # champs None/[] passe par passe si le LLM est injoignable en cours de
     # route — le reste du résultat (flag_scores, recommendation...) reste
     # valide dans tous les cas.
     deep = deep_analysis.run_deep_analysis(
-        pdf_text, document_label, prediction["risk_grade"], prediction["probability_12m"],
+        pdf_text, document_label, prediction["risk_grade"],
         detected_signals,
     )
 
@@ -246,7 +247,7 @@ if __name__ == "__main__":
     for k, v in result["flag_scores"].items():
         print(f"  {k}: {v:.1f}")
     print(f"\nPrédiction :")
-    print(f"  Probabilité 12m : {result['prediction']['probability_12m']:.2%}")
+    print(f"  Score : {result['prediction']['risk_score']}/100")
     print(f"  Grade : {result['prediction']['risk_grade']} ({result['prediction']['risk_label']})")
     print(f"\nSignaux détectés : {len(result['detected_signals'])}")
     for s in result["detected_signals"]:

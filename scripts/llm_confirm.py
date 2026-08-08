@@ -207,18 +207,26 @@ def summarize_passage(text, max_words=30, timeout=60, save=True):
     return summary
 
 
-def generate_recommendation(risk_grade, probability_12m, detected_signals, timeout=60, save=True):
+def generate_recommendation(risk_grade, detected_signals, timeout=60, save=True):
     """
     Recommandation credit committee en 1 phrase, basée sur les signaux
     RÉELLEMENT détectés dans le document (pas un template fixe par grade,
     voir RECOMMENDATION_BY_GRADE dans app.py — ancien comportement).
+
+    CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) : signature adaptée pour
+    ne plus prendre probability_12m — le Cox est retiré (model.py), analyze.py
+    ne calcule plus de probabilité d'événement, juste un risk_grade par
+    règle. Ce module n'est pas concerné par le retrait du Cox/reranker en
+    lui-même (aucun lien), mais cette fonction dépendait directement de
+    probability_12m dans son prompt — sans cet ajustement, l'appel depuis
+    analyze.py planterait (`None:.0%`).
 
     Retourne None si le backend LLM est injoignable ou répond vide —
     l'appelant (analyze.py/app.py) retombe alors sur le template par grade
     (fail-open), plutôt qu'un texte LLM à moitié fiable.
     """
     signal_names = sorted({s["signal"] for s in detected_signals})[:6]  # borne le prompt
-    cache_input = f"{risk_grade}:{round(probability_12m, 3)}:{signal_names}"
+    cache_input = f"{risk_grade}:{signal_names}"
     key = hashlib.sha256(f"{config.LLM_BACKEND}:{config.LLM_MODEL}:recommend:{cache_input}".encode("utf-8")).hexdigest()
     with _cache_lock:
         cache = _load_cache()
@@ -230,7 +238,6 @@ def generate_recommendation(risk_grade, probability_12m, detected_signals, timeo
         "You are writing a one-sentence recommendation for a credit committee "
         "reviewing an ESG risk assessment of a project finance transaction.\n"
         f"Risk grade: {risk_grade}\n"
-        f"Estimated probability of an ESG event within 12 months: {probability_12m:.0%}\n"
         f"Specific risk signals detected in the document: {signals_desc}\n\n"
         "Write ONE concise, actionable sentence (max 35 words) recommending a "
         "specific next step, referencing the actual signals above rather than "

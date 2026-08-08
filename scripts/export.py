@@ -81,7 +81,6 @@ def build_pdf_report(document_label, result, display):
     pdf.cell(0, 8, "Risk Assessment Summary", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 6, _safe(f"Risk Grade: {display['risk_grade']} ({display['risk_label']}) — Score: {display['risk_score']}/100"), new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Probability of ESG event in 12 months: {display['probability_12m']:.0%}", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1)
     recommendation = result.get("recommendation") or "N/A"
     pdf.set_font("Helvetica", "B", 10)
@@ -186,7 +185,6 @@ def build_excel_report(document_label, result, display):
         ("Risk Grade", display["risk_grade"]),
         ("Risk Score (/100)", display["risk_score"]),
         ("Risk Label", display["risk_label"]),
-        ("Probability of ESG event (12m)", f"{display['probability_12m']:.0%}"),
         ("Recommendation", result.get("recommendation") or "N/A"),
         ("", ""),
     ]
@@ -198,7 +196,9 @@ def build_excel_report(document_label, result, display):
         cell.fill = _HEADER_FILL
     for label, score in display["flag_scores"].items():
         ws.append([label, score])
-    for row in ws.iter_rows(min_row=1, max_row=7, min_col=1, max_col=1):
+    # CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) : max_row=6, pas 7 --
+    # une ligne de moins depuis le retrait de "Probability of ESG event".
+    for row in ws.iter_rows(min_row=1, max_row=6, min_col=1, max_col=1):
         row[0].font = Font(bold=True)
     _autofit(ws, [38, 60])
 

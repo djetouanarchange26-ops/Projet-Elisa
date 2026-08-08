@@ -248,10 +248,11 @@ def _map_result_to_display(result):
         "risk_label":       pred["risk_label"].upper(),
         # Score chiffré 0-100 en complément du grade lettre — Elisa juge le
         # grade seul (D/C/B/A) peu explicite sur l'échelle/la gravité en
-        # réunion du 2026-07-25. Même mesure que probability_12m, juste
-        # présentée en entier 0-100 plutôt qu'en pourcentage.
-        "risk_score":       round(pred["probability_12m"] * 100),
-        "probability_12m":  pred["probability_12m"],
+        # réunion du 2026-07-25. CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) :
+        # avant dérivé de probability_12m (Cox, retiré) ; maintenant
+        # directement le max(flag_scores) calculé par model.compute_grade —
+        # déjà sur l'échelle 0-100 attendue ici.
+        "risk_score":       pred["risk_score"],
         "flag_scores":      flag_scores,
         "signals":          signals,
         # DIRECTIVE Jour 2 : compte de CATÉGORIES de signaux distinctes (pas
@@ -831,7 +832,7 @@ if page == "🔍 Transaction Analysis":
                         "timestamp":       datetime.now(),
                         "risk_grade":      display_result["risk_grade"],
                         "risk_label":      display_result["risk_label"],
-                        "probability_12m": display_result["probability_12m"],
+                        "risk_score":      display_result["risk_score"],
                         # FRAGILE: max() sur result["flag_scores"] (clés brutes "flag1_community"...),
                         # pas display_result["flag_scores"] (clés déjà traduites en libellé humain "Community
                         # & Stakeholder Risk...") — sinon FLAG_LABELS[...] plante plus loin (Portfolio Dashboard).
@@ -851,9 +852,8 @@ if page == "🔍 Transaction Analysis":
     if analyze_error:
         st.error(
             f"❌ L'analyse a échoué : {analyze_error}\n\n"
-            "Le modèle Cox n'est probablement pas encore entraîné "
-            "(`models/cox_model.pkl` manquant — voir checklist.md, point "
-            "`time_to_event`)."
+            "Vérifie que les modèles (embeddings, index FAISS) sont bien "
+            "présents dans `models/` — voir checklist.md."
         )
         st.stop()
     elif "last_analysis" not in st.session_state:
@@ -1103,12 +1103,14 @@ if page == "🔍 Transaction Analysis":
         )
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Probability & Recommendation ─────────────────────
+    # ── Recommendation ────────────────────────────────────
     # Placée après les preuves (Flag Scores/Detected Signals) plutôt qu'en
     # tête d'écran, voir le commentaire sur "Risk Grade Summary" ci-dessus.
+    # CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) : plus de probabilité
+    # d'événement à afficher (Cox retiré) — carte renommée, ne garde que la
+    # recommandation LLM.
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">📈 Probability & Recommendation</div>', unsafe_allow_html=True)
-    st.markdown(f"**Probability of ESG event in 12 months:** {display['probability_12m']:.0%}")
+    st.markdown('<div class="card-title">📈 Recommendation</div>', unsafe_allow_html=True)
     recommendation = real_result.get("recommendation") or RECOMMENDATION_BY_GRADE.get(grade, "Grade non reconnu.")
     st.markdown(f"**Recommendation:** {recommendation}")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1153,7 +1155,7 @@ elif page == "📊 Portfolio Dashboard":
                 "Document":      h["document"],
                 "Risk Grade":    h["risk_grade"],
                 "Risk Label":    h["risk_label"],
-                "P(event 12m)":  f"{h['probability_12m']:.0%}",
+                "Score":         f"{h['risk_score']}/100",
                 "Dominant Flag": FLAG_LABELS[h["dominant_flag"]].replace(" Risk", ""),
                 # CHANTIER 4 (V2) : vue comparative — le banquier voit
                 # immédiatement quels projets méritent une attention accrue
@@ -1216,7 +1218,12 @@ elif page == "⚙️ Settings":
     st.markdown("*Seuils de risque et informations sur le corpus*")
 
     st.markdown("### Risk Grade Thresholds")
-    st.caption("Ces seuils sont appliqués immédiatement à la prochaine analyse lancée dans Transaction Analysis.")
+    st.caption(
+        "Ces seuils sont appliqués immédiatement à la prochaine analyse lancée dans "
+        "Transaction Analysis. CHANTIER SIMPLIFICATION PIPELINE (2026-08-08) : seuils "
+        "sur le score max(flag_scores) (0-100), plus sur une probabilité Cox (0-100%) "
+        "— le Cox est retiré."
+    )
 
     current_thresholds = st.session_state.get("risk_thresholds", DEFAULT_RISK_THRESHOLDS)
     t1_default = current_thresholds[0][0]
@@ -1225,10 +1232,10 @@ elif page == "⚙️ Settings":
 
     col1, col2 = st.columns(2)
     with col1:
-        t1 = st.slider("Vigilance → Attention", 0.0, 1.0, t1_default, 0.05)
-        t2 = st.slider("Attention → Alerte", 0.0, 1.0, t2_default, 0.05)
+        t1 = st.slider("Vigilance → Attention", 0, 100, t1_default, 5)
+        t2 = st.slider("Attention → Alerte", 0, 100, t2_default, 5)
     with col2:
-        t3 = st.slider("Alerte → Escalade", 0.0, 1.0, t3_default, 0.05)
+        t3 = st.slider("Alerte → Escalade", 0, 100, t3_default, 5)
 
     if not (t1 < t2 < t3):
         st.warning("Les seuils doivent être strictement croissants (Vigilance < Attention < Alerte) pour un classement cohérent.")
@@ -1237,16 +1244,16 @@ elif page == "⚙️ Settings":
         (t1, "Vigilance", "D"),
         (t2, "Attention", "C"),
         (t3, "Alerte", "B"),
-        (1.01, "Escalade", "A"),
+        (101, "Escalade", "A"),
     ]
 
     st.markdown(f"""
-    | Grade | Label | Probability Range | Action |
-    |-------|-------|-------------------|--------|
-    | D | Vigilance | < {t1:.0%} | Monitoring standard |
-    | C | Attention | {t1:.0%} – {t2:.0%} | Revue renforcée à 90 jours |
-    | B | Alerte | {t2:.0%} – {t3:.0%} | Downgrade d'un cran proposé |
-    | A | Escalade | > {t3:.0%} | Escalade immédiate au credit committee |
+    | Grade | Label | Score Range | Action |
+    |-------|-------|-------------|--------|
+    | D | Vigilance | < {t1}/100 | Monitoring standard |
+    | C | Attention | {t1}–{t2}/100 | Revue renforcée à 90 jours |
+    | B | Alerte | {t2}–{t3}/100 | Downgrade d'un cran proposé |
+    | A | Escalade | > {t3}/100 | Escalade immédiate au credit committee |
     """)
 
     st.markdown("### Corpus Info")

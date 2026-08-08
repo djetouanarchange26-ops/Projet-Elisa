@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 import faiss
 import numpy as np
@@ -8,14 +9,14 @@ from sentence_transformers import SentenceTransformer
 
 import signals
 import llm_confirm as llm_confirm_mod
-import reranker
-import config
 
-# CHANTIER 2 (PROMPT_CLAUDE_CODE_ESG_V2) : taille du pool FAISS interrogé
-# avant re-ranking — plus large que k pour laisser au cross-encoder de
-# vrais candidats à départager. Ignoré (repli sur k direct) si
-# config.RERANKER_ENABLED est désactivé, cf. search_similar_from_chunks.
-RERANK_POOL_SIZE = 30
+# CHANTIER SIMPLIFICATION PIPELINE (2026-08-08, directive) : le cross-encoder
+# (reranker.py) est retiré — c'était ~90% du temps CPU d'une analyse (5100+
+# paires chunk×candidat sur un document réel). reranker.py reste sur disque
+# mais n'est plus importé ici. La pondération par métadonnées (spécificité,
+# récence, chunk_type) est conservée mais appliquée directement sur les
+# scores FAISS bruts — voir _weight_candidates ci-dessous (logique reprise
+# de reranker.rerank(), juste sans la composante cross-encoder).
 
 # DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 1 (§1.1) : plafond global d'appels
 # confirm_risk par appel à get_flag_scores_from_chunks. Un document de
@@ -147,34 +148,105 @@ def _gather_candidates(chunk_i, indices, distances, metadata, exclude_project):
     return candidates
 
 
+# --- Pondération par métadonnées (reprise de reranker.py, sans le cross-
+# encoder) — poids ajustables, cf. commentaire du chantier plus haut. ---
+ALPHA_FAISS = 0.5           # similarité FAISS brute (remplace le cross-encoder)
+BETA_SPECIFICITY = 0.2      # les chunks concrets pèsent plus (Chantier 1)
+GAMMA_RECENCY = 0.2         # les documents récents pèsent plus (doc_date)
+DELTA_CHUNK_TYPE = 0.1      # bonus/malus selon le type rhétorique du chunk
+
+RECENCY_HALF_LIFE_YEARS = 3.0  # SEUIL: demi-vie de la décroissance de récence
+
+CHUNK_TYPE_BOOST = {"metric": 0.2, "incident": 0.2, "commitment": 0.0, "narrative": -0.1}
+# ALT: chunk_type absent (candidat sans métadonnée Chantier 1) -> 0.0 (neutre)
+
+
+def _safe_float(val, default):
+    """`val` peut être None, NaN (pandas), ou une vraie valeur — repli
+    neutre plutôt que de planter sur un candidat aux métadonnées
+    incomplètes (ex: chunk du corpus avant le backfill Chantier 1)."""
+    try:
+        f = float(val)
+        return default if f != f else f  # f != f <=> NaN
+    except (TypeError, ValueError):
+        return default
+
+
+def _recency_score(doc_date_str):
+    """Décroissance exponentielle, demi-vie ~3 ans. 0.5 (neutre) si
+    doc_date absent ou illisible — pas de pénalité injuste pour un
+    document sans date connue."""
+    if not doc_date_str or not isinstance(doc_date_str, str):
+        return 0.5
+    try:
+        doc_date = datetime.strptime(doc_date_str[:10], "%Y-%m-%d")
+    except ValueError:
+        return 0.5
+    age_years = max((datetime.now() - doc_date).days / 365.25, 0)
+    return 0.5 ** (age_years / RECENCY_HALF_LIFE_YEARS)
+
+
+def _weight_candidates(candidates, top_k):
+    """Pondère `candidates` (score FAISS brut + métadonnées) par
+    spécificité/récence/type de chunk, sans cross-encoder — remplace
+    reranker.rerank() (CHANTIER SIMPLIFICATION PIPELINE, 2026-08-08).
+
+    Le score FAISS (produit scalaire sur vecteurs normalisés, cosine
+    similarity) est déjà dans un range utilisable directement — contrairement
+    aux logits bruts du cross-encoder (-9 à +5.6), pas de normalisation
+    min-max par lot nécessaire ici.
+
+    Retourne les candidats triés par "rerank_score" décroissant (même nom de
+    champ qu'avant pour ne pas casser les appelants — _aggregate_flag_scores,
+    app.py — qui lisent candidate.get("rerank_score", candidate["score"])).
+    """
+    if not candidates:
+        return candidates[:top_k]
+
+    for c in candidates:
+        specificity = _safe_float(c.get("specificity_score"), 0.5)
+        recency = _recency_score(c.get("doc_date"))
+        chunk_boost = CHUNK_TYPE_BOOST.get(c.get("chunk_type"), 0.0)
+
+        raw = (
+            ALPHA_FAISS * c["score"]
+            + BETA_SPECIFICITY * specificity
+            + GAMMA_RECENCY * recency
+            + DELTA_CHUNK_TYPE * chunk_boost
+        )
+        # CHOIX: clampé à [0,1] — flag_scores (_aggregate_flag_scores) multiplie
+        # ce score par 100 pour l'échelle 0-100 attendue par l'UI ; sans ça
+        # DELTA_CHUNK_TYPE négatif ou une somme > 1.0 produirait un score hors
+        # bornes (ex: 105/100). Même clamp que l'ancien reranker.rerank().
+        c["rerank_score"] = max(0.0, min(1.0, raw))
+
+    candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
+    return candidates[:top_k]
+
+
 def _rerank_all_chunks(chunks, model, index, metadata, k, exclude_project):
-    """Embedding + recherche FAISS + re-ranking cross-encoder, une fois par
-    chunk de requête — cœur commun à search_similar_from_chunks,
+    """Embedding + recherche FAISS + pondération par métadonnées, une fois
+    par chunk de requête — cœur commun à search_similar_from_chunks,
     get_flag_scores_from_chunks ET analyze_chunks (nouveau, voir plus bas).
 
     AUDIT (2026-08-06, checklist.md) : avant factorisation, analyze.py
     appelait get_flag_scores PUIS search_similar sur les MÊMES chunks du
-    même document — chacun refaisait tout ce calcul indépendamment,
-    y compris le re-ranking cross-encoder (le plus coûteux des deux, CPU
-    pur, aucun GPU sur cette machine). Mesuré sur un document réel de 171
-    chunks : 246.6s de re-ranking pur (search_similar) + un 2e passage
-    quasi identique dans get_flag_scores — ~46% du temps total d'analyze().
-    analyze_chunks() appelle cette fonction UNE SEULE fois et en dérive à la
-    fois flag_scores et similar_passages.
+    même document — chacun refaisait tout ce calcul indépendamment. Mesuré
+    sur un document réel de 171 chunks : ~46% du temps total d'analyze()
+    gaspillé en travail dupliqué. analyze_chunks() appelle cette fonction
+    UNE SEULE fois et en dérive à la fois flag_scores et similar_passages.
 
     Retourne une liste (une par chunk de `chunks`) de listes de candidats
-    déjà re-rankés (au plus k chacune, triés par "rerank_score" décroissant
-    — ou "score" FAISS brut si le re-ranker est désactivé, cf. reranker.rerank).
+    déjà pondérés (au plus k chacune, triés par "rerank_score" décroissant).
     """
     if not chunks:
         return []
 
-    faiss_k = max(k, RERANK_POOL_SIZE) if config.RERANKER_ENABLED else k
     embeddings = _encode_texts(chunks, model)
-    distances, indices = index.search(embeddings, faiss_k)
+    distances, indices = index.search(embeddings, k)
 
     return [
-        reranker.rerank(chunks[i], _gather_candidates(i, indices, distances, metadata, exclude_project), top_k=k)
+        _weight_candidates(_gather_candidates(i, indices, distances, metadata, exclude_project), top_k=k)
         for i in range(len(chunks))
     ]
 

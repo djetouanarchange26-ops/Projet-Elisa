@@ -29,7 +29,9 @@ COX_MODEL_PATH   = BASE / "models/cox_model.pkl"
 
 
 # ============================================================================
-# CONSTRUCTION DU DATASET D'ENTRAÎNEMENT
+# CODE MORT — build_training_data()/train_cox() (retiré du pipeline actif,
+# 2026-08-08, cf. le bandeau "CODE MORT" plus bas pour le détail). Conservé
+# sur disque, plus appelé par pipeline.py.
 # ============================================================================
 
 def build_training_data(model, index, metadata):
@@ -163,15 +165,73 @@ def train_cox(training_df):
 # PRÉDICTION
 # ============================================================================
 
+# CHANTIER SIMPLIFICATION PIPELINE (2026-08-08, directive) : le Cox est
+# retiré (46 projets, coefficients flag2/flag3 non significatifs, décalage
+# train/serve non résolu — cf. checklist.md). compute_grade() le remplace,
+# voir plus bas. DEFAULT_RISK_THRESHOLDS change donc de sémantique : avant
+# des seuils de PROBABILITÉ Cox (0-1), maintenant des seuils sur max(flag_scores)
+# (0-100, même échelle que les flag scores eux-mêmes). Convention conservée :
+# A = pire (Escalade), D = meilleur (Vigilance) — comme avant, pour ne pas
+# inverser la lecture du grade pour Elisa/le Portfolio Dashboard.
+# À calibrer sur les 46 cas connus du corpus (28 événements/18 contrôles) —
+# valeurs initiales, voir checklist.md pour la vérification post-déploiement.
 DEFAULT_RISK_THRESHOLDS = [
-    (0.25, "Vigilance", "D"),     # < 25%
-    (0.55, "Attention", "C"),     # 25–55%
-    (0.80, "Alerte",    "B"),     # 55–80%
-    (1.01, "Escalade",  "A"),     # > 80%
+    (15,  "Vigilance", "D"),     # max flag score < 15
+    (35,  "Attention", "C"),     # 15–35
+    (60,  "Alerte",    "B"),     # 35–60
+    (101, "Escalade",  "A"),     # > 60
 ]
-# ALT: seuils plus conservateurs :
-# (0.15, "Vigilance", "D"), (0.40, "Attention", "C"),
-# (0.65, "Alerte", "B"), (1.01, "Escalade", "A")
+
+
+def compute_grade(flag_scores, risk_thresholds=None):
+    """
+    Grade ESG à partir du max des 3 flag scores (0-100) — remplace le
+    modèle Cox (CHANTIER SIMPLIFICATION PIPELINE, 2026-08-08). Pas de
+    probabilité d'événement : juste un grade/label transparent et ajustable
+    (contrairement au Cox, fragile sur 46 projets avec des coefficients
+    flag2/flag3 non significatifs).
+
+    Paramètres :
+      flag_scores     : dict avec flag1_community, flag2_pollution, flag3_compliance (0-100)
+      risk_thresholds : liste [(seuil_score, label, grade), ...] triée par
+                        seuil croissant — voir DEFAULT_RISK_THRESHOLDS. Permet
+                        à l'UI (Settings) de surcharger les seuils sans
+                        toucher au code (même mécanisme qu'avant).
+
+    Retourne :
+      {
+        "risk_score":  int,    # max(flag_scores), 0-100
+        "risk_label":  str,    # Vigilance / Attention / Alerte / Escalade
+        "risk_grade":  str,    # D / C / B / A
+      }
+    """
+    risk_thresholds = risk_thresholds or DEFAULT_RISK_THRESHOLDS
+    max_score = max(flag_scores.values())
+
+    risk_label, risk_grade = "Escalade", "A"
+    for threshold, label, grade in risk_thresholds:
+        if max_score < threshold:
+            risk_label, risk_grade = label, grade
+            break
+
+    return {
+        "risk_score": round(max_score),
+        "risk_label": risk_label,
+        "risk_grade": risk_grade,
+    }
+
+
+# ============================================================================
+# CODE MORT — modèle Cox (retiré du pipeline actif, 2026-08-08)
+# ============================================================================
+# Conservé sur disque (pas supprimé) au cas où le Cox serait ré-envisagé
+# plus tard avec plus de données — plus importé/appelé nulle part ailleurs
+# depuis ce chantier. build_training_data()/train_cox()/save_cox_model()/
+# load_cox_model()/predict_risk() ci-dessous n'ont plus d'appelant. ATTENTION
+# si tu les réactives : predict_risk() attend des risk_thresholds au format
+# probabilité (0-1) — PAS compatible avec les valeurs de DEFAULT_RISK_THRESHOLDS
+# ci-dessus (0-100, format flag score), qui ont changé de sémantique pour
+# compute_grade().
 
 
 def predict_risk(flag_scores, cox_model, horizon_months=12, risk_thresholds=None):

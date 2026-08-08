@@ -11,8 +11,14 @@ Séquence :
     1. Charger le modèle d'embedding
     2. Encoder les chunks → embeddings.npy
     3. Construire l'index FAISS → faiss_index.bin
-    4. Calculer les flag scores par projet
-    5. Entraîner le modèle Cox → cox_model.pkl
+
+CHANTIER SIMPLIFICATION PIPELINE (2026-08-08, directive) : les anciennes
+étapes 4 (flag scores par projet) et 5 (entraînement Cox) sont retirées —
+elles ne servaient qu'à `model.build_training_data`/`train_cox`, plus
+utilisés (le grade est maintenant une règle sur max(flag_scores), voir
+model.compute_grade, pas un modèle entraîné). Gain de temps direct : cette
+étape faisait tourner get_flag_scores_from_chunks (donc tout le
+retrieval/scoring) sur les 4203 chunks du corpus à chaque ré-entraînement.
 """
 
 import time
@@ -21,8 +27,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
-
-from model import build_training_data, train_cox, save_cox_model
 
 # --- Chemins ---
 BASE = Path(__file__).resolve().parent.parent
@@ -42,7 +46,7 @@ def retrain():
     # ------------------------------------------------------------------
     # Étape 1 : Modèle d'embedding
     # ------------------------------------------------------------------
-    print("\n[1/5] Chargement du modèle d'embedding...")
+    print("\n[1/3] Chargement du modèle d'embedding...")
     model = SentenceTransformer("all-mpnet-base-v2")
     # CHOIX (2026-07-25): bascule depuis all-MiniLM-L6-v2 — dimension 768,
     # plus précis, adopté sans confirmation chiffrée que ça règle le
@@ -54,7 +58,7 @@ def retrain():
     # ------------------------------------------------------------------
     # Étape 2 : Encoder les chunks
     # ------------------------------------------------------------------
-    print("[2/5] Encodage des chunks...")
+    print("[2/3] Encodage des chunks...")
     chunks_df = pd.read_csv(CHUNKS_PATH)
     texts = chunks_df["text"].tolist()
 
@@ -70,7 +74,7 @@ def retrain():
     # ------------------------------------------------------------------
     # Étape 3 : Index FAISS
     # ------------------------------------------------------------------
-    print("[3/5] Construction de l'index FAISS...")
+    print("[3/3] Construction de l'index FAISS...")
     dim = embeddings.shape[1]
 
     # CHOIX: IndexFlatIP — recherche exacte, cosine similarity
@@ -89,32 +93,16 @@ def retrain():
     metadata.to_pickle(METADATA_PATH)
 
     # ------------------------------------------------------------------
-    # Étape 4 : Dataset d'entraînement (flag scores par projet)
-    # ------------------------------------------------------------------
-    print("[4/5] Calcul des flag scores par projet...")
-    training_df = build_training_data(model, index, metadata)
-
-    # ------------------------------------------------------------------
-    # Étape 5 : Entraîner Cox
-    # ------------------------------------------------------------------
-    print("[5/5] Entraînement du modèle Cox...")
-    cox_model = train_cox(training_df)
-    save_cox_model(cox_model)
-
-    # ------------------------------------------------------------------
     # Résumé
     # ------------------------------------------------------------------
     dt = time.time() - t_total
     print("\n" + "=" * 60)
     print("✅ PIPELINE TERMINÉE")
     print(f"  Chunks       : {len(chunks_df)}")
-    print(f"  Projets      : {len(training_df)}")
-    print(f"  Événements   : {training_df['event'].sum()}")
-    print(f"  C-index      : {cox_model.concordance_index_:.3f}")
     print(f"  Temps total  : {dt:.1f}s")
     print("=" * 60)
 
-    return cox_model, training_df
+    return metadata
 
 
 if __name__ == "__main__":

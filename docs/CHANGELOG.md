@@ -1,5 +1,81 @@
 # Changelog
 
+## 2026-08-08 — Simplification du pipeline : retrait Cox + cross-encoder
+
+**Contexte** : même après la migration LLM (Together), une analyse restait à
+194% CPU pendant plusieurs minutes sur un document réel (Mundra CGPL) — pas
+du fallback Ollama (0% CPU côté `esg-ollama`), mais le cross-encoder
+(`reranker.py`, ~90% du temps CPU estimé : 5100+ paires chunk×candidat sur
+un document de 171 chunks) et un modèle Cox fragile (46 projets,
+coefficients flag2/flag3 non significatifs, décalage train/serve non
+résolu). Décision : les retirer tous les deux plutôt que les optimiser.
+Exception explicite au sprint (roadmap : "pas de fix perf avant le 25 août"),
+étendue au-delà de la seule exception LLM déjà accordée — voir memory
+`feedback_prioritize_features_over_perf`.
+
+**Changements** :
+- `scripts/reranker.py` : plus importé nulle part (reste sur disque tel
+  quel, avec un bug latent inoffensif : `config.RERANKER_ENABLED`
+  n'existe plus — ne se déclenche jamais puisque le module n'est plus
+  appelé).
+- `scripts/search.py` : `_rerank_all_chunks()` ne passe plus par le
+  cross-encoder — nouvelle fonction `_weight_candidates()` (logique
+  reprise de `reranker.rerank()`, spécificité/récence/chunk_type
+  conservées) pondère directement le score FAISS brut
+  (`ALPHA_FAISS=0.5` remplace `ALPHA_CROSS_ENCODER`). Le pool FAISS
+  revient à `k` direct (plus besoin d'élargir à 30 pour un cross-encoder
+  qui n'existe plus).
+- `scripts/config.py` : `RERANKER_ENABLED`/`ESG_RERANKER_ENABLED` retirés.
+- `scripts/model.py` : nouvelle fonction `compute_grade()` — grade/label à
+  partir de `max(flag_scores)` (0-100) et de seuils simples
+  (`DEFAULT_RISK_THRESHOLDS`, valeurs initiales 15/35/60, **à calibrer**
+  via `scripts/calibrate_thresholds.py` sur les 46 cas connus). Convention
+  conservée : A = pire (Escalade), D = meilleur (Vigilance), comme avec le
+  Cox — pas d'inversion pour ne pas dérouter Elisa/le Portfolio Dashboard.
+  `build_training_data()`/`train_cox()`/`predict_risk()`/`load_cox_model()`/
+  `save_cox_model()` conservés en code mort (pas supprimés, plus appelés).
+- `scripts/analyze.py` : `_ensure_loaded()` ne charge plus `cox_model.pkl`
+  (plus de `_cox`). `analyze()` appelle `compute_grade()` au lieu de
+  `predict_risk()`. `result["prediction"]` n'a plus `probability_12m`/
+  `survival_curve`/`hazard_ratios` — juste `risk_score`/`risk_label`/
+  `risk_grade`.
+- `scripts/pipeline.py` : `retrain()` n'entraîne plus le Cox (étapes 4-5
+  retirées, docstring/logs renumérotés 1-3). Plus d'appel à
+  `get_flag_scores_from_chunks` sur les 4203 chunks du corpus à chaque
+  ré-entraînement.
+- `scripts/deep_analysis.py` : `run_pass3()`/`run_deep_analysis()` ne
+  prennent plus `probability_12m` — prompt Pass 3 garde `risk_grade` seul.
+- `scripts/llm_confirm.py` : `generate_recommendation()` ne prend plus
+  `probability_12m` (signature + prompt adaptés). Nécessaire malgré
+  "aucun lien" avec Cox/reranker dans la directive initiale — cette
+  fonction dépendait directement de `probability_12m` dans son prompt,
+  sans ajustement l'appel depuis `analyze.py` aurait levé une exception
+  (`None:.0%`).
+- `app.py` : carte "Risk Assessment Summary" (`risk_score` dérivé de
+  `compute_grade`, plus de probabilité), carte "Probability & Recommendation"
+  renommée "📈 Recommendation" (probabilité retirée), Portfolio Dashboard
+  (colonne "P(event 12m)" → "Score"), Settings (sliders 0-100 au lieu de
+  0.0-1.0, seuils sur score pas probabilité), message d'erreur (ne mentionne
+  plus le Cox). Radar ESG déjà sans axe probabilité — rien à changer.
+- `scripts/export.py` : PDF et Excel (feuille Summary) — ligne "Probability
+  of ESG event" retirée.
+- `scripts/test.py` : `--unit` teste `compute_grade()` (au lieu du Cox),
+  `--integ`/`--business` adaptés (`risk_score` au lieu de `probability_12m`).
+  **31/31 tests passent** (validé en local avec les vraies données du
+  corpus + backend Together).
+- `scripts/calibrate_thresholds.py` (nouveau) : vérifie la séparation
+  événements/contrôles avec les seuils actuels sur les 46 projets connus —
+  pas encore exécuté (40+ min d'appels LLM), à lancer après déploiement.
+
+**Mesuré** : `analyze()` sur le cas de test standard passe de ~18 min
+(baseline pré-Together) à **21.7s** en local (Together + sans
+reranker/Cox). À confirmer sur un document réel (Mundra, 60-70 pages) sur
+le VPS après déploiement — objectif directive : < 3 min.
+
+**Non fait** : calibration réelle des seuils 15/35/60 sur les 46 cas
+(script prêt, pas encore lancé) ; test de perf sur un document réel de
+60-70 pages (fait seulement sur les 4 cas de test courts de `test.py`).
+
 ## 2026-08-08 — Abstraction du backend LLM (llm_backend.py)
 
 **Contexte** : Ollama en local (CPU) dégrade sous charge soutenue (~17 ->
