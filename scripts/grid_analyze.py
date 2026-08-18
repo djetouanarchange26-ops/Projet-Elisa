@@ -128,9 +128,15 @@ def _answer_for_question(question, question_chunks, document_type):
 
     # R10 — filtre de sujet : simple enregistrement de ce que le LLM a
     # répondu (il a déjà appliqué R10 dans le prompt, cf. grid_prompts.py)
-    # — AUCUN filtre post-traitement ici, cf. docstring du module.
+    # — AUCUN filtre post-traitement ici, jamais de bascule automatique
+    # OUI->NON codée en Python, cf. docstring du module. Les 4 catégories
+    # (SPV/PRÊTEUR/SUBSTITUTION/AMBIGU/INDIRECT) sont toutes enregistrées
+    # dans `qualifying` pour traçabilité analyste — seul SPV et SUBSTITUTION
+    # n'ont rien de particulier à signaler (le score reflète alors
+    # directement le fait, pas une exclusion de sujet).
     qualifying = None
-    if parsed.get("subject_filter") == "PRÊTEUR":
+    subject_filter = parsed.get("subject_filter")
+    if subject_filter == "PRÊTEUR":
         qualifying = {
             "subject_filter": "lender",
             "lender_supervision": parsed.get("evidence_r") or "",
@@ -140,6 +146,28 @@ def _answer_for_question(question, question_chunks, document_type):
                 "grid_analyze: %s — verbatim sujet PRÊTEUR sans substitution trouvée par le "
                 "LLM ; réponse OUI maintenue telle quelle mais qualifiée (R10, validation "
                 "analyste requise, cf. Note de Cadrage décision 2).", code
+            )
+    elif subject_filter == "AMBIGU":
+        qualifying = {
+            "subject_filter": "ambiguous",
+            "ambiguous_note": parsed.get("evidence_r") or "",
+        }
+        if status == "OUI":
+            logger.warning(
+                "grid_analyze: %s — sujet AMBIGU mais réponse OUI reçue du LLM (R10 exige "
+                "de ne PAS attribuer un manquement ambigu à la SPV) ; réponse maintenue "
+                "telle quelle mais qualifiée, validation analyste requise.", code
+            )
+    elif subject_filter == "INDIRECT":
+        qualifying = {
+            "subject_filter": "indirect_not_imputable",
+            "indirect_note": parsed.get("evidence_r") or "",
+        }
+        if status == "OUI":
+            logger.warning(
+                "grid_analyze: %s — sujet INDIRECT (manquement non imputable à la SPV) mais "
+                "réponse OUI reçue du LLM ; réponse maintenue telle quelle mais qualifiée, "
+                "validation analyste requise.", code
             )
 
     return {

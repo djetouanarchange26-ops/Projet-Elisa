@@ -146,8 +146,11 @@ Les 4 statuts :
 R7bis — ITEMS ESAP : un item d'ESAP = obligation non encore remplie. Alimente toujours le risque, jamais la mitigation.
 
 R10 — FILTRE DE SUJET : identifier le sujet du manquement.
-- Sujet = société de projet, sponsor, contractants, installation → alimente le score.
-- Sujet = institution financière, auditeur, mécanisme de recours → N'ALIMENTE PAS le score. Chercher un verbatim de substitution portant sur le même fait avec le client pour sujet AVANT de faire basculer la réponse.
+- Sujet = société de projet, sponsor, contractants, installation → alimente le score → SUJET: SPV.
+- Sujet = institution financière, auditeur, mécanisme de recours → N'ALIMENTE PAS le score → SUJET: PRÊTEUR. Chercher un verbatim de substitution portant sur le même fait avec le client/la SPV pour sujet AVANT de faire basculer la réponse (si trouvé → SUJET: SUBSTITUTION, réponds sur la base de ce nouveau verbatim).
+- Sujet ambigu ou non déterminable avec certitude (le passage ne permet pas de trancher qui est visé) → NE PAS attribuer automatiquement le manquement à la SPV : réponds NON (ou repli silence si aucun passage n'est réellement exploitable) → SUJET: AMBIGU.
+- Le projet est concerné INDIRECTEMENT (réaction d'un tiers, contexte externe au projet) mais AUCUN manquement n'est imputable à la SPV/au projet lui-même → réponds NON → SUJET: INDIRECT.
+Seul un manquement CLAIREMENT imputable à la SPV/au projet peut déclencher OUI. Le biais R1 (pencher vers OUI en cas de doute) s'applique au contenu du risque, JAMAIS à l'attribution du sujet — un doute sur QUI est visé n'est pas un doute sur CE QUI s'est passé, et ne se résout jamais par défaut vers la SPV.
 
 {temporal_rule}
 
@@ -164,7 +167,7 @@ PAGE: [numéro ou "inconnue"]
 MITIGATION_STATUS: NON_INTENTION ou NON_FORME_INSUFFISANTE ou OUI_PROUVEE ou OUI_DEFAILLANTE ou N/A
 EVIDENCE_MESURE: [passage de la mesure — ou vide]
 EVIDENCE_DEFAILLANCE: [passage de la défaillance si statut 4 — ou vide]
-SUJET: SPV ou PRÊTEUR ou SUBSTITUTION
+SUJET: SPV ou PRÊTEUR ou SUBSTITUTION ou AMBIGU ou INDIRECT
 CONFIDENCE: [explication du doute — ou vide]
 """
 
@@ -201,7 +204,7 @@ PAGE: [numéro ou "inconnue"]
 MITIGATION_STATUS: NON_INTENTION ou NON_FORME_INSUFFISANTE ou OUI_PROUVEE ou OUI_DEFAILLANTE ou N/A
 EVIDENCE_MESURE: [passage de mitigation — ou vide]
 EVIDENCE_DEFAILLANCE: [si statut 4 — ou vide]
-SUJET: SPV ou PRÊTEUR ou SUBSTITUTION
+SUJET: SPV ou PRÊTEUR ou SUBSTITUTION ou AMBIGU ou INDIRECT
 CONFIDENCE: [si doute — ou vide]
 """
 
@@ -443,7 +446,7 @@ _LINE_PATTERNS = {
     "confidence_note":      re.compile(r"^CONFIDENCE\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
 }
 
-_VALID_SUBJECT_FILTERS = ("SPV", "PRÊTEUR", "SUBSTITUTION")
+_VALID_SUBJECT_FILTERS = ("SPV", "PRÊTEUR", "SUBSTITUTION", "AMBIGU", "INDIRECT")
 
 
 def parse_response(raw_response):

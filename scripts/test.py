@@ -230,6 +230,40 @@ def test_unit():
     # — backend LLM monkey-patché, pas d'appel réseau réel.
     test_grid_doctype()
 
+    # 1.19 R10 — catégories étendues du filtre de sujet (AMBIGU, INDIRECT)
+    # — string-only sur les prompts + parsing, pas de LLM.
+    test_grid_prompts_r10_extended()
+
+
+def test_grid_prompts_r10_extended():
+    """Tests dédiés à l'extension R10 (grid_prompts.py) : 2 nouvelles
+    catégories de sujet (AMBIGU, INDIRECT) en plus de SPV/PRÊTEUR/
+    SUBSTITUTION, avec consigne explicite de ne jamais attribuer par
+    défaut un manquement ambigu à la SPV. String-only, aucun appel LLM."""
+    print("\n--- 1.19 R10 — filtre de sujet étendu (grid_prompts.py) ---\n")
+
+    import grid_prompts
+
+    prompt_a21 = grid_prompts.get_prompt("A.2.1", ["chunk"])
+    _test("R10 : catégorie AMBIGU documentée dans le prompt", "AMBIGU" in prompt_a21)
+    _test("R10 : catégorie INDIRECT documentée dans le prompt", "INDIRECT" in prompt_a21)
+    _test("R10 : consigne explicite de ne pas attribuer un sujet ambigu à la SPV",
+          "NE PAS" in prompt_a21 and "attribuer" in prompt_a21.lower())
+    _test("R10 : le biais R1 ne s'applique jamais à l'attribution du sujet",
+          "jamais" in prompt_a21.lower() and "sujet" in prompt_a21.lower())
+
+    # Parsing : les 2 nouvelles catégories sont acceptées telles quelles,
+    # sans réécriture (fail-open, cohérent avec SPV/PRÊTEUR/SUBSTITUTION).
+    resp_ambigu = "STATUS: NON\nEVIDENCE_R:\nPAGE: inconnue\nMITIGATION_STATUS: N/A\nSUJET: AMBIGU\n"
+    parsed_ambigu = grid_prompts.parse_response(resp_ambigu)
+    _test("Parsing V4 : subject_filter='AMBIGU' accepté", parsed_ambigu["subject_filter"] == "AMBIGU",
+          f"Obtenu : {parsed_ambigu['subject_filter']!r}")
+
+    resp_indirect = "STATUS: NON\nEVIDENCE_R:\nPAGE: inconnue\nMITIGATION_STATUS: N/A\nSUJET: INDIRECT\n"
+    parsed_indirect = grid_prompts.parse_response(resp_indirect)
+    _test("Parsing V4 : subject_filter='INDIRECT' accepté", parsed_indirect["subject_filter"] == "INDIRECT",
+          f"Obtenu : {parsed_indirect['subject_filter']!r}")
+
 
 def test_grid_doctype():
     """Tests de la détection automatique du type de document (R11,
