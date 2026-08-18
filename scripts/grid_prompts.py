@@ -83,6 +83,31 @@ RÈGLE : une déclaration client contredite par un constat d'auditeur dans le m�
 
 _HIERARCHY_RULE_OTHER = ""
 
+# --- R2bis — articulation B.2.3 / B.4.1 (correction V4) ---
+# CHOIX: injectée uniquement pour B.2.3 et B.4.1 (cf. get_prompt), pas dans
+# toutes les questions du template standard — évite de gonfler le prompt de
+# règles hors-sujet pour les 9 autres questions qui partagent ce template.
+# Corrige un sur-classement observé : un même verbatim mentionnant des
+# impacts sanitaires (irritations, maladies) liés à un REJET CHRONIQUE
+# AUTORISÉ déclenchait à tort B.2.3 (réservée aux événements ACCIDENTELS)
+# EN PLUS de B.4.1 — les deux questions ne doivent partager un verbatim que
+# si le texte décrit RÉELLEMENT un événement accidentel distinct.
+_ARTICULATION_B23_B41 = """R2bis — ARTICULATION B.2.3 / B.4.1 : ne pas confondre un rejet CHRONIQUE
+et un événement ACCIDENTEL.
+- B.2.3 = un ÉVÉNEMENT PONCTUEL ET ACCIDENTEL : déversement accidentel,
+  fuite, émission hors contrôle, rejet non maîtrisé — un fait qui sort du
+  fonctionnement normal/autorisé de l'installation.
+- B.4.1 = un DOMMAGE SANITAIRE sur des personnes, quelle qu'en soit
+  l'origine — y compris un rejet CHRONIQUE et AUTORISÉ (ex : eaux de
+  rejet habituelles d'une installation, dans le cadre de son permis) qui
+  cause des irritations, maladies ou blessures documentées.
+UN REJET CHRONIQUE AUTORISÉ QUI CAUSE UN DOMMAGE SANITAIRE ALIMENTE
+UNIQUEMENT B.4.1, JAMAIS B.2.3 — l'autorisation/le caractère habituel du
+rejet exclut par définition l'« événement hors contrôle » que B.2.3
+exige. B.2.3 et B.4.1 ne peuvent se déclencher sur le MÊME verbatim que si
+ce verbatim décrit explicitement un événement accidentel (déversement,
+fuite) distinct du fonctionnement normal."""
+
 # --- Règle de silence (R5) selon silence_type (cf. grid_questions.py, CC-08) ---
 # CHOIX: deux variantes courtes, cohérentes avec grid_questions.SILENCE_VALUES
 # — pas de nouvelle sémantique inventée ici, juste la formulation prompt de
@@ -151,6 +176,8 @@ R10 — FILTRE DE SUJET : identifier le sujet du manquement.
 - Sujet ambigu ou non déterminable avec certitude (le passage ne permet pas de trancher qui est visé) → NE PAS attribuer automatiquement le manquement à la SPV : réponds NON (ou repli silence si aucun passage n'est réellement exploitable) → SUJET: AMBIGU.
 - Le projet est concerné INDIRECTEMENT (réaction d'un tiers, contexte externe au projet) mais AUCUN manquement n'est imputable à la SPV/au projet lui-même → réponds NON → SUJET: INDIRECT.
 Seul un manquement CLAIREMENT imputable à la SPV/au projet peut déclencher OUI. Le biais R1 (pencher vers OUI en cas de doute) s'applique au contenu du risque, JAMAIS à l'attribution du sujet — un doute sur QUI est visé n'est pas un doute sur CE QUI s'est passé, et ne se résout jamais par défaut vers la SPV.
+
+{articulation_rule}
 
 {temporal_rule}
 
@@ -300,6 +327,34 @@ PIÈGE — mécanisme ignoré des bénéficiaires (Mundra) :
 Le dispositif EXISTE mais ses destinataires l'IGNORENT → B.1.2 = OUI.
 """,
 
+    "B.2.3": """
+=== EXEMPLES DE RÉFÉRENCE ===
+
+REJET CHRONIQUE AUTORISÉ + DOMMAGE SANITAIRE -> B.4.1 SEULEMENT (R2bis) :
+« Skin and respiratory irritation reported among residents near the plant's
+routine wastewater discharge canal, operated under the existing permit. »
+Rejet HABITUEL, AUTORISÉ (« routine », « existing permit ») — pas un
+événement accidentel. → B.2.3 = NON. Le dommage sanitaire alimente
+UNIQUEMENT B.4.1.
+
+DÉVERSEMENT ACCIDENTEL -> B.2.3 = OUI :
+« An unplanned spill of process effluent occurred on 14 March, bypassing
+the treatment system and reaching the adjacent creek. »
+Événement PONCTUEL, HORS CONTRÔLE (« unplanned », « bypassing ») → B.2.3 = OUI.
+
+FUITE ACCIDENTELLE -> B.2.3 = OUI :
+« A leak from a damaged pipeline was discovered during a routine
+inspection and repaired within 48 hours. »
+Fuite = défaillance matérielle ponctuelle, pas le fonctionnement normal
+autorisé → B.2.3 = OUI (même si réparée rapidement — la mitigation se
+juge séparément, cf. R3/R7).
+
+DOMMAGE SANITAIRE SANS ÉVÉNEMENT ACCIDENTEL -> ne pas créer B.2.3 artificiellement :
+Un dommage sanitaire documenté sans mention d'un déversement/fuite/rejet
+hors contrôle spécifique n'alimente que B.4.1. Ne pas inférer un événement
+accidentel juste parce qu'un dommage existe.
+""",
+
     "B.2.2": """
 === EXEMPLES DE RÉFÉRENCE ===
 
@@ -394,6 +449,10 @@ def get_prompt(question_code, context_chunks, document_type=1):
     # Few-shot — cf. _FEW_SHOT_EXAMPLES, "" si aucun cas annoté pour ce code
     few_shot = _FEW_SHOT_EXAMPLES.get(question_code, "")
 
+    # R2bis — articulation B.2.3/B.4.1 (correction V4) : uniquement pour ces
+    # deux questions, cf. docstring de _ARTICULATION_B23_B41.
+    articulation = _ARTICULATION_B23_B41 if question_code in ("B.2.3", "B.4.1") else ""
+
     context = "\n---\n".join(context_chunks) if context_chunks else "(aucun passage fourni)"
 
     if question.get("inverted_polarity"):
@@ -414,6 +473,7 @@ def get_prompt(question_code, context_chunks, document_type=1):
         context_chunks=context,
         silence_rule=silence_rule,
         proof_forms_rule=proof_rule,
+        articulation_rule=articulation,
         temporal_rule=temporal,
         hierarchy_rule=hierarchy,
         few_shot_section=few_shot,

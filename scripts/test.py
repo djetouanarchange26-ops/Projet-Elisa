@@ -234,6 +234,10 @@ def test_unit():
     # — string-only sur les prompts + parsing, pas de LLM.
     test_grid_prompts_r10_extended()
 
+    # 1.20 Articulation B.2.3/B.4.1 (rejet chronique autorisé vs événement
+    # accidentel) — string-only sur les prompts, pas de LLM.
+    test_grid_prompts_b23_b41_articulation()
+
 
 def test_grid_prompts_r10_extended():
     """Tests dédiés à l'extension R10 (grid_prompts.py) : 2 nouvelles
@@ -263,6 +267,26 @@ def test_grid_prompts_r10_extended():
     parsed_indirect = grid_prompts.parse_response(resp_indirect)
     _test("Parsing V4 : subject_filter='INDIRECT' accepté", parsed_indirect["subject_filter"] == "INDIRECT",
           f"Obtenu : {parsed_indirect['subject_filter']!r}")
+
+
+def test_grid_prompts_b23_b41_articulation():
+    """Tests dédiés à la correction V4 'B.2.3 vs B.4.1' (grid_prompts.py) :
+    la règle R2bis n'est injectée que pour ces deux questions, et distingue
+    explicitement un rejet chronique autorisé (-> B.4.1 seulement) d'un
+    événement accidentel (-> B.2.3). String-only, aucun appel LLM."""
+    print("\n--- 1.20 Articulation B.2.3/B.4.1 (grid_prompts.py) ---\n")
+
+    import grid_prompts
+
+    prompt_b23 = grid_prompts.get_prompt("B.2.3", ["chunk"])
+    prompt_b41 = grid_prompts.get_prompt("B.4.1", ["chunk"])
+    prompt_b22 = grid_prompts.get_prompt("B.2.2", ["chunk"])
+    _test("Articulation B.2.3/B.4.1 : présente dans le prompt B.2.3", "R2bis" in prompt_b23)
+    _test("Articulation B.2.3/B.4.1 : présente dans le prompt B.4.1", "R2bis" in prompt_b41)
+    _test("Articulation B.2.3/B.4.1 : ABSENTE d'un autre prompt standard (B.2.2)",
+          "R2bis" not in prompt_b22)
+    _test("Articulation : rejet chronique autorisé -> B.4.1 seulement (texte explicite)",
+          "UNIQUEMENT B.4.1" in prompt_b23)
 
 
 def test_grid_doctype():
@@ -413,7 +437,13 @@ def test_grid_prompts_v4():
     # Questions sans cas annoté -> pas de few-shot inventé (fallback "")
     _test("Pas de few-shot pour A.4.1 (aucun cas annoté)", "A.4.1" not in grid_prompts._FEW_SHOT_EXAMPLES)
     _test("Pas de few-shot pour B.2.1 (aucun cas annoté)", "B.2.1" not in grid_prompts._FEW_SHOT_EXAMPLES)
-    _test("Pas de few-shot pour B.2.3 (aucun cas annoté)", "B.2.3" not in grid_prompts._FEW_SHOT_EXAMPLES)
+    # B.2.3 A DÉSORMAIS un few-shot (correction V4 "B.2.3 vs B.4.1" — cas
+    # réel manquant avant, ajouté pour distinguer rejet chronique autorisé
+    # (-> B.4.1 seulement) d'un événement accidentel (-> B.2.3).
+    _test("Few-shot B.2.3 (correction V4) : présent", "B.2.3" in grid_prompts._FEW_SHOT_EXAMPLES)
+    prompt_b23 = grid_prompts.get_prompt("B.2.3", ["chunk"])
+    _test("Few-shot B.2.3 : distingue rejet chronique autorisé de l'accidentel",
+          "routine" in prompt_b23.lower() and "unplanned" in prompt_b23.lower())
 
     # --- Parsing V4 avec SUJET (R10) ---
     response_v4 = (
