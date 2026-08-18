@@ -226,6 +226,76 @@ def test_unit():
     # déterministe (fpdf2/openpyxl), pas de LLM.
     test_grid_v4_export()
 
+    # 1.18 Détection automatique du type de document (R11, grid_doctype.py)
+    # — backend LLM monkey-patché, pas d'appel réseau réel.
+    test_grid_doctype()
+
+
+def test_grid_doctype():
+    """Tests de la détection automatique du type de document (R11,
+    grid_doctype.py). Backend LLM monkey-patché (même idiome que
+    test_grid_analyze_v4), pas d'appel réseau réel."""
+    print("\n--- 1.18 Détection automatique du type de document (grid_doctype.py) ---\n")
+
+    import llm_backend
+    import grid_doctype
+
+    _orig_dispatch = llm_backend._dispatch
+
+    def _make_fake_dispatch(doc_type, confidence="haute"):
+        def _fake(backend, prompt, model, options, timeout):
+            return f"TYPE: {doc_type}\nCONFIANCE: {confidence}\nEVIDENCE: extrait de justification\n"
+        return _fake
+
+    try:
+        # --- 4 types, LLM simulé répond correctement pour chacun ---
+        for expected_type in (1, 2, 3, 4):
+            llm_backend._dispatch = _make_fake_dispatch(expected_type)
+            result = grid_doctype.detect_document_type("Texte de test quelconque.")
+            _test(f"Type {expected_type} : détecté correctement",
+                  result["document_type"] == expected_type, f"Obtenu : {result}")
+            _test(f"Type {expected_type} : source='llm'", result["source"] == "llm")
+            _test(f"Type {expected_type} : confidence='haute'", result["confidence"] == "haute")
+            _test(f"Type {expected_type} : evidence non vide", bool(result["evidence"]))
+
+        # --- Fail-open : LLM injoignable -> repli heuristique lexical,
+        # jamais un Type 1 muet indiscernable d'une vraie détection ---
+        def _broken_dispatch(backend, prompt, model, options, timeout):
+            raise RuntimeError("backend injoignable (simulation)")
+        llm_backend._dispatch = _broken_dispatch
+
+        result_fail = grid_doctype.detect_document_type(
+            "Compliance Advisor Ombudsman (CAO) monitoring report — Third Monitoring Period."
+        )
+        _test("Fail-open : LLM injoignable -> pas d'exception, dict retourné",
+              isinstance(result_fail, dict))
+        _test("Fail-open : source='fallback_heuristique_lexicale' (pas un Type 1 muet)",
+              result_fail["source"] == "fallback_heuristique_lexicale", f"Obtenu : {result_fail}")
+        _test("Fail-open : indices CAO/monitoring period -> Type 3 par heuristique",
+              result_fail["document_type"] == 3, f"Obtenu : {result_fail}")
+        _test("Fail-open : confidence='faible' (signale une détection non fiable)",
+              result_fail["confidence"] == "faible")
+
+        # --- Fail-open sans aucun indice lexical -> Type 1, mais explicitement marqué ---
+        result_no_hint = grid_doctype.detect_document_type("")
+        _test("Fail-open sans indice : document_type=1 (repli prudent)",
+              result_no_hint["document_type"] == 1)
+        _test("Fail-open sans indice : source='fallback_heuristique_aucun_indice'",
+              result_no_hint["source"] == "fallback_heuristique_aucun_indice")
+
+        # --- Réponse LLM inexploitable (pas de ligne TYPE) -> repli heuristique ---
+        def _garbage_dispatch(backend, prompt, model, options, timeout):
+            return "réponse illisible sans le bon format"
+        llm_backend._dispatch = _garbage_dispatch
+        result_garbage = grid_doctype.detect_document_type("Annual Monitoring Report prepared by the client.")
+        _test("Réponse LLM inexploitable -> repli heuristique (pas de crash)",
+              result_garbage["source"].startswith("fallback"))
+        _test("Réponse LLM inexploitable + indice AMR -> Type 2 par heuristique",
+              result_garbage["document_type"] == 2, f"Obtenu : {result_garbage}")
+
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+
 
 def test_grid_prompts_v4():
     """Tests des prompts V4 (grid_prompts.py, directive CC-V4-05) : règles

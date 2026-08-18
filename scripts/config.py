@@ -78,6 +78,9 @@ OLLAMA_CONFIGS = {
     "recommend":       {"num_predict": 150, "num_ctx": 1024},
     "deep_extract":    {"num_predict": 180, "num_ctx": 1024},
     "deep_synthesize": {"num_predict": 450, "num_ctx": 2048},
+    # R11 (grid_doctype.py) : un seul appel par document, réponse courte
+    # (TYPE/CONFIANCE/EVIDENCE) — pas besoin du contexte large de deep_synthesize.
+    "detect_doctype":  {"num_predict": 200, "num_ctx": 2048},
 }
 
 # CHANTIER LLM BACKEND (2026-08-07, checklist.md) — abstraction Ollama local

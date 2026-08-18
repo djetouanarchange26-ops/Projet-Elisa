@@ -68,10 +68,46 @@ def render_grid_v4_tab(result_v4, project_name=""):
         st.info("La Grille V4 n'a pas pu être calculée. Vérifiez les logs.")
         return
 
+    _render_document_type_detection(result_v4)
     _render_risk_summary(result_v4)
     _render_grid_table(result_v4)
     _render_evidence_explorer(result_v4)
     _render_export_buttons(result_v4, project_name)
+
+
+def _render_document_type_detection(result_v4):
+    """Affiche la détection R11 (grid_doctype.py) : type détecté, confiance,
+    justification. CHOIX: affichée en tête, avant même le score — le type de
+    document conditionne toute la lecture des 12 questions (R8/R9/R11), un
+    analyste doit pouvoir la contester avant de lire le reste. Un
+    "source" != "llm" (repli heuristique) est signalé explicitement, pas
+    masqué derrière un type par défaut silencieux (cf. grid_doctype.py)."""
+    detection = result_v4.get("document_type_detection")
+    if not detection:
+        return
+
+    source = detection.get("source")
+    confidence = detection.get("confidence", "faible")
+    label = result_v4.get("reading_mode_label") or "—"
+
+    if source == "llm":
+        st.caption(
+            f"**Type de document détecté (R11)** : Type {detection['document_type']} — "
+            f"{label} · confiance {confidence}"
+        )
+    elif source == "manuel":
+        st.caption(f"**Type de document (R11)** : Type {detection['document_type']} — {label} · saisie manuelle")
+    else:
+        st.warning(
+            f"⚠️ Détection automatique du type de document indisponible — repli sur "
+            f"Type {detection['document_type']} ({label}) par heuristique lexicale, "
+            f"confiance {confidence}. **Vérifiez ce type manuellement avant de valider l'analyse.**"
+        )
+
+    evidence = detection.get("evidence")
+    if evidence:
+        with st.expander("Justification de la détection de type"):
+            st.caption(evidence)
 
 
 def _render_export_buttons(result_v4, project_name):

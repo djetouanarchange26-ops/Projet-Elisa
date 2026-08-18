@@ -767,13 +767,20 @@ with st.sidebar:
         st.markdown("---")
         st.subheader("Grille V4 (beta)")
 
+        # CHOIX: "Auto" (None) est le défaut — la détection R11
+        # (grid_doctype.py) tourne à chaque analyse et résout le type
+        # automatiquement ; ce sélecteur ne sert plus qu'à FORCER une
+        # valeur si l'analyste conteste la détection (contrôle humain,
+        # Note de Cadrage décision 2), pas à choisir un défaut à l'aveugle
+        # (avant ce chantier, l'index 0 figé = Type 1 pour tout document,
+        # y compris un rapport de monitoring Type 3).
         st.selectbox(
             "Type de document (R11)",
-            options=[1, 2, 3, 4],
-            format_func=lambda x: grid_questions.DOCUMENT_TYPES[x]["label"],
+            options=[None, 1, 2, 3, 4],
+            format_func=lambda x: "🤖 Détection automatique (recommandé)" if x is None else grid_questions.DOCUMENT_TYPES[x]["label"],
             index=0,
-            key="grid_v4_document_type",
-            help="Conditionne le mode de lecture et les formes de preuve admises",
+            key="grid_v4_document_type_override",
+            help="Laisser sur détection automatique sauf si vous contestez le type détecté après une analyse.",
         )
 
         st.multiselect(

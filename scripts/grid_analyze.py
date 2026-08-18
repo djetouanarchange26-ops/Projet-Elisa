@@ -215,3 +215,48 @@ def analyze_grid(chunks, na_modules=None, document_type=1):
 
     scoring = grid_scoring.compute_grid_score(question_results, document_type=document_type)
     return grid_result.build_grid_result(question_results, scoring)
+
+
+def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override=None):
+    """Comme analyze_grid(), mais résout document_type (R11) AVANT
+    l'annotation/le scoring au lieu de le recevoir en paramètre obligatoire
+    — cf. grid_doctype.py : le type de document conditionne le mode de
+    lecture de chaque question (grid_prompts.get_prompt), il doit donc être
+    connu avant le premier appel LLM par question, pas après coup.
+
+    full_text : texte intégral du document (pas les chunks) — transmis tel
+    quel à grid_doctype.detect_document_type(), qui a besoin d'un extrait
+    cohérent (début de document), pas de chunks découpés/mélangés.
+    document_type_override : int (1-4) — saisie manuelle de l'analyste
+    (contrôle humain, Note de Cadrage décision 2). Si fourni, la détection
+    LLM n'est PAS appelée (pas d'appel superflu) ; le résultat porte
+    quand même un bloc "document_type_detection" avec source="manuel"
+    pour que l'UI affiche la provenance de façon uniforme.
+
+    Ajoute au résultat un bloc "document_type_detection" :
+        {"document_type": int, "confidence": "haute"|"moyenne"|"faible"|
+         "manuelle", "evidence": str|None,
+         "source": "llm"|"manuel"|"fallback_heuristique_..."}
+    Ce bloc est un simple pass-through informatif (comme "qualifying",
+    grid_result.py) — jamais relu par grid_scoring.py, qui ne connaît que
+    l'entier document_type déjà résolu ici.
+    """
+    if not config.GRID_V4_ENABLED:
+        return None
+
+    import grid_doctype
+
+    if document_type_override is not None:
+        detection = {
+            "document_type": document_type_override,
+            "confidence": "manuelle",
+            "evidence": None,
+            "source": "manuel",
+        }
+    else:
+        detection = grid_doctype.detect_document_type(full_text)
+
+    result = analyze_grid(chunks, na_modules=na_modules, document_type=detection["document_type"])
+    if result is not None:
+        result["document_type_detection"] = detection
+    return result
