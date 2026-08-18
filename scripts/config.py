@@ -139,13 +139,18 @@ GRID_V4_ENABLED = True
 # plutôt que de retomber silencieusement sur l'autre si mal configuré.
 # "v4"     : pipeline canonique — Grille ESG V4 (12 questions), scoring
 #            déterministe (grid_scoring.py).
-# "legacy" : ancien pipeline (3 flags FAISS, max(), compute_grade).
-# CHOIX (rollout) : défaut "legacy" pour l'instant — ce commit introduit le
-# MÉCANISME de dispatch unique (un seul pipeline tourne par analyse, plus
-# jamais les deux, cf. pipeline_dispatch.py), sans encore changer le
-# comportement par défaut de l'application. Le défaut bascule vers "v4"
-# dans un commit séparé et minimal une fois la Grille V4 vérifiée en
-# conditions réelles (calibration 4 dossiers + dispatch testé), pour que
-# la désactivation de l'ancien pipeline reste un point de bascule isolé et
-# facilement réversible.
-ACTIVE_PIPELINE = os.environ.get("ESG_ACTIVE_PIPELINE", "legacy").strip().lower()
+# "legacy" : ancien pipeline (3 flags FAISS, max(), compute_grade) —
+#            CONSERVÉ (analyze.py, model.py::compute_grade toujours
+#            présents et testés isolément par scripts/test.py) mais plus
+#            jamais le défaut : réservé à une comparaison technique
+#            ponctuelle via ESG_ACTIVE_PIPELINE=legacy, hors chemin
+#            applicatif normal.
+# CHOIX (rollout) : bascule du défaut vers "v4" — la Grille V4 a été
+# vérifiée (calibration Indorama/Aysha/CBG/Mundra, dispatch unique testé,
+# cf. scripts/test.py --unit) et devient la pipeline canonique en
+# production. Commit isolé et minimal (une seule valeur change) pour
+# rester facilement réversible (git revert) si un problème est repéré
+# après déploiement — sans jamais revenir à une double exécution : même
+# après un revert, pipeline_dispatch.py garantit qu'un seul pipeline
+# tourne par analyse, jamais les deux.
+ACTIVE_PIPELINE = os.environ.get("ESG_ACTIVE_PIPELINE", "v4").strip().lower()
