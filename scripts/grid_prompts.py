@@ -166,7 +166,7 @@ Les 4 statuts :
 1. NON_INTENTION — échec porte 1
 2. NON_FORME_INSUFFISANTE — OK porte 1, échec porte 2
 3. OUI_PROUVEE — OK portes 1 et 2
-4. OUI_DEFAILLANTE — OK portes 1 et 2, MAIS le document établit que la mesure n'a pas produit son effet ou a été interrompue. Citer les DEUX passages.
+4. OUI_DEFAILLANTE — OK portes 1 et 2, MAIS le document établit que CETTE MÊME MESURE (celle citée en EVIDENCE_MESURE) n'a pas produit son effet ou a été interrompue. EVIDENCE_DEFAILLANCE doit porter EXPLICITEMENT sur la mesure décrite en EVIDENCE_MESURE — pas sur une autre mesure, pas sur un problème général du projet, pas sur une simple conjonction concessive (however/although/despite) isolée sans lien de cause démontré avec CETTE mesure. Si le lien entre les deux passages n'est pas explicite dans le texte, ne PAS conclure au statut 4 — rester au statut 3 (OUI_PROUVEE). Citer les DEUX passages, chacun portant sur la même mesure.
 
 R7bis — ITEMS ESAP : un item d'ESAP = obligation non encore remplie. Alimente toujours le risque, jamais la mitigation.
 
@@ -193,7 +193,7 @@ EVIDENCE_R: [passage exact entre guillemets — ou vide]
 PAGE: [numéro ou "inconnue"]
 MITIGATION_STATUS: NON_INTENTION ou NON_FORME_INSUFFISANTE ou OUI_PROUVEE ou OUI_DEFAILLANTE ou N/A
 EVIDENCE_MESURE: [passage de la mesure — ou vide]
-EVIDENCE_DEFAILLANCE: [passage de la défaillance si statut 4 — ou vide]
+EVIDENCE_DEFAILLANCE: [passage de la défaillance si statut 4, portant sur la MÊME mesure — ou vide]
 SUJET: SPV ou PRÊTEUR ou SUBSTITUTION ou AMBIGU ou INDIRECT
 CONFIDENCE: [explication du doute — ou vide]
 """
@@ -230,7 +230,7 @@ EVIDENCE_R: [passage exact — ou vide]
 PAGE: [numéro ou "inconnue"]
 MITIGATION_STATUS: NON_INTENTION ou NON_FORME_INSUFFISANTE ou OUI_PROUVEE ou OUI_DEFAILLANTE ou N/A
 EVIDENCE_MESURE: [passage de mitigation — ou vide]
-EVIDENCE_DEFAILLANCE: [si statut 4 — ou vide]
+EVIDENCE_DEFAILLANCE: [si statut 4, portant sur la MÊME mesure — ou vide]
 SUJET: SPV ou PRÊTEUR ou SUBSTITUTION ou AMBIGU ou INDIRECT
 CONFIDENCE: [si doute — ou vide]
 """

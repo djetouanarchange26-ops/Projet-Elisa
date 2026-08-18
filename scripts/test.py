@@ -238,6 +238,10 @@ def test_unit():
     # accidentel) — string-only sur les prompts, pas de LLM.
     test_grid_prompts_b23_b41_articulation()
 
+    # 1.21 R7 — exige que le verbatim de défaillance porte sur la MÊME
+    # mesure que le verbatim de mesure (statut 4) — string-only, pas de LLM.
+    test_grid_prompts_r7_evidence_linkage()
+
 
 def test_grid_prompts_r10_extended():
     """Tests dédiés à l'extension R10 (grid_prompts.py) : 2 nouvelles
@@ -287,6 +291,26 @@ def test_grid_prompts_b23_b41_articulation():
           "R2bis" not in prompt_b22)
     _test("Articulation : rejet chronique autorisé -> B.4.1 seulement (texte explicite)",
           "UNIQUEMENT B.4.1" in prompt_b23)
+
+
+def test_grid_prompts_r7_evidence_linkage():
+    """Tests dédiés au renforcement R7 (grid_prompts.py) : le verbatim de
+    défaillance (EVIDENCE_DEFAILLANCE, statut 4) doit porter explicitement
+    sur la MÊME mesure que le verbatim de mesure (EVIDENCE_MESURE) — une
+    simple conjonction concessive (however/although) isolée, ou une
+    défaillance d'une AUTRE mesure, ne suffit plus : le LLM doit rester au
+    statut 3 en cas de doute sur le lien. String-only, aucun appel LLM
+    (le garde-fou structurel — double verbatim non vide — existe déjà côté
+    grid_scoring.py et n'est pas modifié ici)."""
+    print("\n--- 1.21 R7 — lien mesure/défaillance (grid_prompts.py) ---\n")
+
+    import grid_prompts
+
+    prompt_b11 = grid_prompts.get_prompt("B.1.1", ["chunk"])
+    _test("R7 : exige que la défaillance porte sur la MÊME mesure",
+          "MÊME" in prompt_b11 and "mesure" in prompt_b11.lower())
+    _test("R7 : cas 'lien non explicite -> rester au statut 3' documenté",
+          "statut 3" in prompt_b11 and "statut 4" in prompt_b11)
 
 
 def test_grid_doctype():
