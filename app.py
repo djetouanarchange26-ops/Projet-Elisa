@@ -486,7 +486,17 @@ def warmup_ollama():
     dev). Fail-open : si Ollama n'est pas encore prêt (ex: healthcheck Docker
     pas terminé) ou injoignable, ignore silencieusement — analyze()/
     llm_confirm.py ont déjà leur propre fail-open pour le premier vrai appel.
+
+    CORRECTIF (reconnexion Together AI, 2026-08-18) : ce warmup ciblait
+    Ollama en dur, sans jamais vérifier config.LLM_BACKEND — c'était le
+    SEUL appel réseau du repo à contourner l'abstraction llm_backend.py,
+    et il tapait donc sur Ollama même quand LLM_BACKEND=together (échec
+    silencieux, sans conséquence fonctionnelle, mais un appel local
+    involontaire). Un modèle cloud n'a de toute façon rien à "précharger
+    en RAM" côté client — n'a de sens que pour le backend "ollama".
     """
+    if config.LLM_BACKEND != "ollama":
+        return True
     try:
         requests.post(
             f"{config.OLLAMA_HOST}/api/generate",

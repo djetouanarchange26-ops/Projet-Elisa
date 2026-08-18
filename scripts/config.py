@@ -7,9 +7,25 @@ tout (comportement "MVP complet"). `export ESG_DEEP_ANALYSIS_ENABLED=0` (ou
 `false`/`no`/vide) désactive une fonctionnalité sans rien casser côté
 appelant — chaque module consommateur doit fail gracefully vers son
 comportement pré-chantier quand son flag est désactivé (cf. deep_analysis.py).
+
+CORRECTIF (reconnexion Together AI, 2026-08-18) : `.env` (racine du repo)
+n'était jamais chargé en dehors de Docker Compose (qui l'interpole
+nativement) — un `python scripts/test.py` ou `streamlit run app.py` lancé
+directement ne voyait donc JAMAIS LLM_BACKEND=together ni TOGETHER_API_KEY
+définis dans `.env`, et retombait silencieusement sur les défauts codés en
+dur ("ollama"). `load_dotenv()` ci-dessous corrige ça — chemin explicite
+(pas de recherche par CWD) pour un comportement identique quel que soit le
+répertoire d'où le process est lancé. `override=False` (défaut) : une
+variable déjà présente dans l'environnement réel (Docker, shell) garde
+toujours priorité sur `.env`.
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 
 def _flag(name, default=True):
@@ -69,11 +85,14 @@ OLLAMA_CONFIGS = {
 # modèle/pas de fix perf avant le 25 août" : dégradation Ollama sous charge
 # (~17 -> <7 tok/s après ~50 appels) bloquait une démo live.
 #
-# CHOIX: défaut "ollama", PAS "together" — contrairement à la proposition
-# initiale — pour ne rien changer aux déploiements existants (VPS, autres
-# dev sans clé API) tant que LLM_BACKEND=together n'est pas mis
-# explicitement dans l'environnement (poste de démo).
-LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama").strip().lower()
+# CHOIX (reconnexion Together AI, 2026-08-18) : défaut "together", pas
+# "ollama" — Together devient le fournisseur LLM PRINCIPAL de toute
+# l'infrastructure (ancien pipeline ET Grille V4), conformément à
+# CLAUDE.md ("LLM : Together AI cloud = défaut MVP") qui documentait déjà
+# cette intention sans qu'elle soit reflétée ici. "ollama" reste
+# entièrement supporté (LLM_BACKEND=ollama explicite, ou LLM_FALLBACK) —
+# rien n'est supprimé, seul le défaut change.
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "together").strip().lower()
 
 # Modèle par défaut selon le backend actif si LLM_MODEL n'est pas fourni.
 # Qwen/Qwen3.5-9B choisi (pas Qwen3.7 Max) : Max a le "deep thinking" activé

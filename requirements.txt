@@ -14,3 +14,4 @@ requests
 fpdf2
 plotly
 openai
+python-dotenv
