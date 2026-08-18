@@ -96,3 +96,13 @@ LLM_FALLBACK = os.environ.get("LLM_FALLBACK", "ollama").strip().lower()
 # Requêtes/seconde max vers un backend cloud — ignoré pour "ollama" (pas de
 # rate limit externe en local).
 LLM_RATE_LIMIT = float(os.environ.get("LLM_RATE_LIMIT", "10"))
+
+# --- Grille ESG V4 (nouveau pipeline) ---
+# CHOIX: feature flag pour basculer entre l'ancien pipeline (3 flags FAISS)
+# et le nouveau (12 questions de la Grille V4). L'ancien reste actif en
+# parallèle (onglet séparé, cf. app.py) tant que la V4 n'est pas validée
+# sur au moins 2 dossiers en conditions réelles.
+# RENOMMÉ (CC-V4-08) : GRID_V3_ENABLED -> GRID_V4_ENABLED — même flag,
+# nom aligné sur la version courante de la grille (plus de confusion à
+# l'ajout de l'onglet Streamlit V4).
+GRID_V4_ENABLED = True
