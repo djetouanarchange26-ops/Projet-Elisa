@@ -242,6 +242,10 @@ def test_unit():
     # mesure que le verbatim de mesure (statut 4) — string-only, pas de LLM.
     test_grid_prompts_r7_evidence_linkage()
 
+    # 1.22 Dispatch pipeline unique (pipeline_dispatch.py, refactor pipeline
+    # unique) — garde-fou anti double-exécution, monkey-patché.
+    test_pipeline_dispatch_single_execution()
+
 
 def test_grid_prompts_r10_extended():
     """Tests dédiés à l'extension R10 (grid_prompts.py) : 2 nouvelles
@@ -311,6 +315,83 @@ def test_grid_prompts_r7_evidence_linkage():
           "MÊME" in prompt_b11 and "mesure" in prompt_b11.lower())
     _test("R7 : cas 'lien non explicite -> rester au statut 3' documenté",
           "statut 3" in prompt_b11 and "statut 4" in prompt_b11)
+
+
+def test_pipeline_dispatch_single_execution():
+    """GARDE-FOU : une analyse ne doit déclencher EXACTEMENT qu'un seul
+    pipeline (V4 xor legacy), jamais les deux, jamais aucun silencieusement
+    (refactor pipeline unique). Compteurs d'appels sur les deux points
+    d'entrée (analyze.analyze / grid_analyze.analyze_grid_auto), monkey-
+    patchés — pas d'appel réseau réel."""
+    print("\n--- 1.22 Dispatch pipeline unique (pipeline_dispatch.py) ---\n")
+
+    import config
+    import pipeline_dispatch
+    import analyze as analyze_module
+    import grid_analyze
+
+    calls = {"legacy": 0, "v4": 0}
+
+    def _fake_analyze(text, risk_thresholds=None, k=15, document_label="x"):
+        calls["legacy"] += 1
+        return {"flag_scores": {}, "prediction": {}, "similar_passages": [],
+                "detected_signals": [], "signal_spans": [], "recommendation": None,
+                "deep_analysis": {"enabled": False}, "processing_time_s": 0}
+
+    def _fake_analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override=None):
+        calls["v4"] += 1
+        return {"grid_version": "V4", "document_type": 1, "questions": [],
+                "scoring": {"score": 100}, "document_type_detection": {"source": "manuel"}}
+
+    _orig_analyze = analyze_module.analyze
+    _orig_analyze_grid_auto = grid_analyze.analyze_grid_auto
+    _orig_pipeline = config.ACTIVE_PIPELINE
+    analyze_module.analyze = _fake_analyze
+    grid_analyze.analyze_grid_auto = _fake_analyze_grid_auto
+
+    try:
+        # --- ACTIVE_PIPELINE="v4" : exactement 1 appel V4, 0 legacy ---
+        calls["legacy"] = calls["v4"] = 0
+        config.ACTIVE_PIPELINE = "v4"
+        dispatch_result = pipeline_dispatch.run_active_pipeline(
+            "texte de test", chunks_for_grid=[{"text": "x", "page": None}],
+            document_type_override=1,
+        )
+        _test("ACTIVE_PIPELINE='v4' -> exactement 1 appel V4", calls["v4"] == 1, f"Obtenu : {calls}")
+        _test("ACTIVE_PIPELINE='v4' -> 0 appel legacy", calls["legacy"] == 0, f"Obtenu : {calls}")
+        _test("ACTIVE_PIPELINE='v4' -> dispatch_result['pipeline']='v4'",
+              dispatch_result["pipeline"] == "v4")
+        _test("ACTIVE_PIPELINE='v4' -> result (legacy) reste None",
+              dispatch_result["result"] is None)
+        _test("ACTIVE_PIPELINE='v4' -> result_v4 non None",
+              dispatch_result["result_v4"] is not None)
+
+        # --- ACTIVE_PIPELINE="legacy" : exactement 1 appel legacy, 0 V4 ---
+        calls["legacy"] = calls["v4"] = 0
+        config.ACTIVE_PIPELINE = "legacy"
+        dispatch_result = pipeline_dispatch.run_active_pipeline("texte de test")
+        _test("ACTIVE_PIPELINE='legacy' -> exactement 1 appel legacy", calls["legacy"] == 1, f"Obtenu : {calls}")
+        _test("ACTIVE_PIPELINE='legacy' -> 0 appel V4", calls["v4"] == 0, f"Obtenu : {calls}")
+        _test("ACTIVE_PIPELINE='legacy' -> dispatch_result['pipeline']='legacy'",
+              dispatch_result["pipeline"] == "legacy")
+        _test("ACTIVE_PIPELINE='legacy' -> result_v4 reste None",
+              dispatch_result["result_v4"] is None)
+
+        # --- Mauvaise config -> erreur explicite, jamais un repli silencieux ---
+        calls["legacy"] = calls["v4"] = 0
+        config.ACTIVE_PIPELINE = "n_importe_quoi"
+        try:
+            pipeline_dispatch.run_active_pipeline("texte de test")
+            _test("ACTIVE_PIPELINE invalide -> ValueError levée", False, "Aucune exception levée")
+        except ValueError:
+            _test("ACTIVE_PIPELINE invalide -> ValueError levée", True)
+        _test("ACTIVE_PIPELINE invalide -> AUCUN pipeline appelé (pas de fallback silencieux)",
+              calls == {"legacy": 0, "v4": 0}, f"Obtenu : {calls}")
+
+    finally:
+        analyze_module.analyze = _orig_analyze
+        grid_analyze.analyze_grid_auto = _orig_analyze_grid_auto
+        config.ACTIVE_PIPELINE = _orig_pipeline
 
 
 def test_grid_doctype():

@@ -119,12 +119,33 @@ LLM_FALLBACK = os.environ.get("LLM_FALLBACK", "ollama").strip().lower()
 # rate limit externe en local).
 LLM_RATE_LIMIT = float(os.environ.get("LLM_RATE_LIMIT", "10"))
 
-# --- Grille ESG V4 (nouveau pipeline) ---
-# CHOIX: feature flag pour basculer entre l'ancien pipeline (3 flags FAISS)
-# et le nouveau (12 questions de la Grille V4). L'ancien reste actif en
-# parallèle (onglet séparé, cf. app.py) tant que la V4 n'est pas validée
-# sur au moins 2 dossiers en conditions réelles.
+# --- Grille ESG V4 (pipeline canonique) ---
+# CHOIX: GRID_V4_ENABLED reste un simple disjoncteur (charge/ne charge pas
+# les modules grid_*) — la question "quel pipeline tourne pour une analyse"
+# est tranchée par ACTIVE_PIPELINE ci-dessous, pas par ce flag seul.
 # RENOMMÉ (CC-V4-08) : GRID_V3_ENABLED -> GRID_V4_ENABLED — même flag,
-# nom aligné sur la version courante de la grille (plus de confusion à
-# l'ajout de l'onglet Streamlit V4).
+# nom aligné sur la version courante de la grille.
 GRID_V4_ENABLED = True
+
+# --- Pipeline actif ---
+# CHOIX: un enum à 2 valeurs ("v4" | "legacy"), pas deux flags booléens
+# indépendants — deux flags pourraient être activés tous les deux par
+# erreur (ou par défaut divergent d'un déploiement à l'autre) et
+# réintroduire une double exécution LLM sur la même analyse (l'ancien
+# pipeline `analyze.py` + la Grille V4 pour le même document uploadé,
+# constaté dans app.py avant ce chantier). Un enum rend ça structurellement
+# impossible : scripts/pipeline_dispatch.py::run_active_pipeline() appelle
+# EXACTEMENT un des deux pipelines, jamais les deux, et lève une erreur
+# plutôt que de retomber silencieusement sur l'autre si mal configuré.
+# "v4"     : pipeline canonique — Grille ESG V4 (12 questions), scoring
+#            déterministe (grid_scoring.py).
+# "legacy" : ancien pipeline (3 flags FAISS, max(), compute_grade).
+# CHOIX (rollout) : défaut "legacy" pour l'instant — ce commit introduit le
+# MÉCANISME de dispatch unique (un seul pipeline tourne par analyse, plus
+# jamais les deux, cf. pipeline_dispatch.py), sans encore changer le
+# comportement par défaut de l'application. Le défaut bascule vers "v4"
+# dans un commit séparé et minimal une fois la Grille V4 vérifiée en
+# conditions réelles (calibration 4 dossiers + dispatch testé), pour que
+# la désactivation de l'ancien pipeline reste un point de bascule isolé et
+# facilement réversible.
+ACTIVE_PIPELINE = os.environ.get("ESG_ACTIVE_PIPELINE", "legacy").strip().lower()

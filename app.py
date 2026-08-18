@@ -18,7 +18,12 @@ import plotly.graph_objects as go
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
-from analyze import analyze
+# CHOIX (refactor pipeline unique) : app.py n'importe plus `analyze`
+# (ancien pipeline) directement — le seul point d'entrée pour lancer UNE
+# analyse est pipeline_dispatch.run_active_pipeline(), qui importe
+# analyze.py lui-même, en interne, UNIQUEMENT si config.ACTIVE_PIPELINE=
+# "legacy". Ça garantit qu'aucun chemin applicatif normal ne peut
+# déclencher l'ancien pipeline en plus de la Grille V4 pour la même analyse.
 from model import DEFAULT_RISK_THRESHOLDS
 from signals import SIGNAL_KEYWORDS, SIGNAL_PATTERNS
 from deep_analysis import N_CRITICAL_TOPICS
@@ -27,6 +32,7 @@ import chunk_metadata
 import llm_confirm
 import export
 import config
+import pipeline_dispatch
 
 CHUNKS_PATH = Path(__file__).resolve().parent / "data/processed/chunks.csv"
 
@@ -731,12 +737,12 @@ st.markdown("""
 # ── Sidebar ──────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🧭 Navigation")
-    # CHOIX (CC-V4-08): onglet V4 additionnel, jamais un remplacement —
-    # n'apparaît dans la navigation que si le pipeline Grille est activé
-    # (config.GRID_V4_ENABLED, renommé depuis GRID_V3_ENABLED).
+    # CHOIX (refactor pipeline unique) : plus d'onglet séparé "ESG Grid V4
+    # (beta)" — Transaction Analysis EST la Grille V4 quand
+    # config.ACTIVE_PIPELINE="v4". L'ancien onglet dupliquait la navigation
+    # pour un résultat déjà calculé dans la même action "Run Analysis" ;
+    # supprimé pour n'avoir qu'un seul système de scoring visible dans l'UI.
     _nav_sections = ["🔍 Transaction Analysis", "📊 Portfolio Dashboard", "📚 Pattern Library", "⚙️ Settings"]
-    if config.GRID_V4_ENABLED:
-        _nav_sections.append("🧪 ESG Grid V4 (beta)")
     page = st.radio(
         "Section",
         _nav_sections,
@@ -747,7 +753,7 @@ with st.sidebar:
     _history = st.session_state.get("analysis_history", [])
     if _history:
         _rows = "".join(
-            f"{h['document']} (Grade {h['risk_grade']})<br>"
+            f"{h['document']} ({h.get('grade_label', h.get('risk_grade', '—'))})<br>"
             for h in reversed(_history[-3:])
         )
         st.markdown(f'<div style="font-size:0.85rem; color:#666;">{_rows}</div>', unsafe_allow_html=True)
@@ -756,16 +762,18 @@ with st.sidebar:
     st.markdown("---")
     st.caption("v0.1 MVP · Données publiques IFC/CAO")
 
-    # ── Contrôles Grille V4 (beta), CC-V4-08 ──
+    # ── Contrôles Grille V4 (refactor pipeline unique) ──
     # CHOIX: import de grid_questions différé ici (pas en tête de fichier)
     # — cohérent avec la consigne de ne jamais importer les modules V4 hors
     # d'un bloc gardé par config.GRID_V4_ENABLED (un déploiement sans les
-    # fichiers V4 ne doit pas planter au chargement de app.py).
-    if config.GRID_V4_ENABLED:
+    # fichiers V4 ne doit pas planter au chargement de app.py). Gardé sur
+    # ACTIVE_PIPELINE="v4" (pas seulement GRID_V4_ENABLED) — ces contrôles
+    # n'ont aucun effet si le pipeline actif est "legacy".
+    if config.GRID_V4_ENABLED and config.ACTIVE_PIPELINE == "v4":
         import grid_questions
 
         st.markdown("---")
-        st.subheader("Grille V4 (beta)")
+        st.subheader("Grille V4")
 
         # CHOIX: "Auto" (None) est le défaut — la détection R11
         # (grid_doctype.py) tourne à chaque analyse et résout le type
@@ -863,95 +871,96 @@ if page == "🔍 Transaction Analysis":
                         doc_label = f"{len(uploaded_files)} documents ({', '.join(f.name for f in uploaded_files)})"
                     st.write(f"✓ Texte extrait ({len(extracted_text)} caractères)")
 
-                    st.write("Analyse ESG en cours (scoring, signaux, synthèse LLM)...")
-                    result = analyze(
-                        extracted_text,
-                        risk_thresholds=st.session_state.get("risk_thresholds"),
-                        # FRAGILE: k (nombre de voisins FAISS interrogés) n'est plus réglable
-                        # depuis Settings (paramètre technique, pas pertinent pour l'analyste
-                        # métier) — valeur validée par défaut, voir checklist.md.
-                        k=15,
-                        document_label=doc_label,
-                    )
-                    display_result = _map_result_to_display(result)
-                    st.write("✓ Scoring, signaux et synthèse LLM terminés")
-
                     # CHANTIER 4 (V2) : chunks du DOCUMENT ANALYSÉ (pas le
-                    # corpus) — pour la spécificité du document et l'aperçu
-                    # de chunk source dans le tableau de findings. Même
-                    # chunk_text() que search.py/deep_analysis.py (cohérence),
-                    # mais ici c'est un simple calcul d'affichage, pas
-                    # d'embedding/scoring — aucun risque de décalage train/serve.
+                    # corpus) — même chunk_text() que search.py/deep_analysis.py
+                    # (cohérence), réutilisé par les DEUX pipelines pour ne
+                    # jamais re-chunker deux fois le même texte.
                     doc_chunks = search.chunk_text(extracted_text) or [extracted_text]
-                    doc_specificity = _compute_document_specificity(doc_chunks)
-                    findings_table = _build_findings_table(result["deep_analysis"], doc_chunks)
+                    # _chunks_with_pages() reste un stub MVP (page=None) tant
+                    # que search.chunk_text() ne restitue pas d'offset de page.
+                    chunks_for_grid = _chunks_with_pages(extracted_text, doc_chunks)
 
-                    # --- Pipeline Grille V4 (CC-V4-08) ---
-                    # CHOIX: pipeline séparé de analyze() ci-dessus — jamais
-                    # bloquant pour l'ancien pipeline (Transaction Analysis
-                    # reste utilisable même si la V4 échoue, cf. except
-                    # ci-dessous). Import différé dans le bloc gardé par le
-                    # flag : un déploiement sans les fichiers V4 ne doit pas
-                    # planter au chargement de app.py.
-                    result_v4 = None
-                    if config.GRID_V4_ENABLED:
-                        st.write("Pipeline Grille V4 (beta) en cours...")
-                        try:
-                            import grid_analyze
+                    # --- UN SEUL pipeline, jamais les deux (refactor pipeline
+                    # unique) --- pipeline_dispatch.run_active_pipeline()
+                    # appelle EXACTEMENT analyze() (legacy) OU
+                    # grid_analyze.analyze_grid_auto() (V4) selon
+                    # config.ACTIVE_PIPELINE, jamais les deux pour la même
+                    # analyse — cf. scripts/pipeline_dispatch.py.
+                    st.write(f"Analyse ESG en cours (pipeline actif : {config.ACTIVE_PIPELINE.upper()})...")
+                    dispatch_result = pipeline_dispatch.run_active_pipeline(
+                        extracted_text,
+                        chunks_for_grid=chunks_for_grid,
+                        na_modules=st.session_state.get("grid_v4_na_modules"),
+                        document_type_override=st.session_state.get("grid_v4_document_type_override"),
+                        document_label=doc_label,
+                        risk_thresholds=st.session_state.get("risk_thresholds"),
+                        # FRAGILE: k (nombre de voisins FAISS interrogés, legacy
+                        # seulement) n'est plus réglable depuis Settings —
+                        # valeur validée par défaut, voir checklist.md.
+                        k=15,
+                    )
+                    pipeline_used = dispatch_result["pipeline"]
+                    result = dispatch_result["result"]
+                    result_v4 = dispatch_result["result_v4"]
+                    st.write(f"✓ Analyse terminée (pipeline {pipeline_used})")
 
-                            # Réutilise les chunks déjà calculés ci-dessus
-                            # (search.chunk_text) — pas de re-chunking, même
-                            # base de texte pour les deux pipelines (cf.
-                            # "Ce qu'il ne faut PAS faire", CC-V4-09).
-                            # _chunks_with_pages() reste un stub MVP
-                            # (page=None) tant que search.chunk_text() ne
-                            # restitue pas d'offset de page (cf. sa docstring).
-                            chunks_for_grid = _chunks_with_pages(extracted_text, doc_chunks)
-
-                            # Pas de grid_sections.classify_chunks() ici :
-                            # grid_analyze.analyze_grid() l'appelle déjà en
-                            # interne (cf. grid_analyze.py, CC-V4-06) — un
-                            # second appel ici serait redondant, pas une
-                            # exclusion supplémentaire.
-                            result_v4 = grid_analyze.analyze_grid(
-                                chunks_for_grid,
-                                na_modules=st.session_state.get("grid_v4_na_modules"),
-                                document_type=st.session_state.get("grid_v4_document_type", 1),
-                            )
-                            st.write("✓ Grille V4 calculée")
-                        except Exception as e:
-                            logging.error("Pipeline Grille V4 échoué : %s", e)
-                            result_v4 = None
+                    display_result = None
+                    doc_specificity = None
+                    findings_table = []
+                    if pipeline_used == "legacy":
+                        display_result = _map_result_to_display(result)
+                        doc_specificity = _compute_document_specificity(doc_chunks)
+                        findings_table = _build_findings_table(result["deep_analysis"], doc_chunks)
 
                     # Résultat "actif" affiché ci-dessous — persiste tant que
                     # l'analyste ne relance pas une analyse ou ne change pas
                     # d'onglet et ne revient pas (sinon les résultats
                     # disparaissaient au moindre autre clic sur la page).
                     st.session_state["last_analysis"] = {
+                        "pipeline":        pipeline_used,
                         "result":          result,
+                        "result_v4":       result_v4,
                         "display":         display_result,
                         "extracted_text":  extracted_text,
                         "document":        doc_label,
                         "doc_specificity": doc_specificity,
                         "findings_table":  findings_table,
-                        "result_v4":       result_v4,
                     }
-                    # Historique de session pour Portfolio Dashboard.
-                    st.session_state.setdefault("analysis_history", []).append({
-                        "document":        doc_label,
-                        "timestamp":       datetime.now(),
-                        "risk_grade":      display_result["risk_grade"],
-                        "risk_label":      display_result["risk_label"],
-                        "risk_score":      display_result["risk_score"],
-                        # FRAGILE: max() sur result["flag_scores"] (clés brutes "flag1_community"...),
-                        # pas display_result["flag_scores"] (clés déjà traduites en libellé humain "Community
-                        # & Stakeholder Risk...") — sinon FLAG_LABELS[...] plante plus loin (Portfolio Dashboard).
-                        "dominant_flag":   max(result["flag_scores"], key=result["flag_scores"].get),
-                        # CHANTIER 4 (V2) : pour la vue comparative Portfolio Dashboard.
-                        "doc_specificity": doc_specificity,
-                        "n_findings":      len(findings_table),
-                        "n_omissions":     len(result["deep_analysis"].get("omissions") or []),
-                    })
+
+                    # Historique de session pour Portfolio Dashboard — forme
+                    # différente selon le pipeline (score/couleur V4 vs
+                    # grade/flag legacy), cf. rendu de la page dashboard.
+                    if pipeline_used == "legacy":
+                        st.session_state.setdefault("analysis_history", []).append({
+                            "pipeline":        "legacy",
+                            "document":        doc_label,
+                            "timestamp":       datetime.now(),
+                            "risk_grade":      display_result["risk_grade"],
+                            "grade_label":     f"Grade {display_result['risk_grade']}",
+                            "risk_label":      display_result["risk_label"],
+                            "risk_score":      display_result["risk_score"],
+                            # FRAGILE: max() sur result["flag_scores"] (clés brutes "flag1_community"...),
+                            # pas display_result["flag_scores"] (clés déjà traduites en libellé humain).
+                            "dominant_flag":   max(result["flag_scores"], key=result["flag_scores"].get),
+                            "doc_specificity": doc_specificity,
+                            "n_findings":      len(findings_table),
+                            "n_omissions":     len(result["deep_analysis"].get("omissions") or []),
+                        })
+                    else:
+                        _scoring = (result_v4 or {}).get("scoring", {})
+                        _detection = (result_v4 or {}).get("document_type_detection", {})
+                        st.session_state.setdefault("analysis_history", []).append({
+                            "pipeline":           "v4",
+                            "document":           doc_label,
+                            "timestamp":          datetime.now(),
+                            "score":              _scoring.get("score"),
+                            "color":              _scoring.get("color"),
+                            "grade_label":        f"{_scoring.get('score', '—')}/100 {_scoring.get('color', '')}".strip(),
+                            "document_type":      (result_v4 or {}).get("document_type"),
+                            "reading_mode_label": (result_v4 or {}).get("reading_mode_label"),
+                            "detection_source":   _detection.get("source"),
+                            "questions_active":   _scoring.get("questions_active"),
+                        })
                     status.update(label="Analyse terminée", state="complete", expanded=False)
                 except Exception as e:
                     status.update(label="L'analyse a échoué", state="error", expanded=True)
@@ -971,10 +980,25 @@ if page == "🔍 Transaction Analysis":
         st.stop()
 
     active = st.session_state["last_analysis"]
+    doc_label = active["document"]
+    pipeline_used = active.get("pipeline", "legacy")
+
+    # --- Pipeline V4 (canonique une fois config.ACTIVE_PIPELINE="v4") ---
+    # Rendu dédié (grid_display.py, déjà utilisé par l'ex-onglet "ESG Grid
+    # V4 (beta)", fusionné ici) puis on court-circuite le reste de la page
+    # — le bloc "legacy" ci-dessous ne s'exécute jamais dans ce cas (cf.
+    # pipeline_dispatch.py : un seul pipeline tourne par analyse, jamais
+    # les deux, donc rien d'utile à afficher depuis l'ancien pipeline ici).
+    if pipeline_used == "v4":
+        import grid_display
+        grid_display.render_grid_v4_tab(active.get("result_v4"), project_name=doc_label)
+        st.stop()
+
+    # --- Pipeline legacy — atteint UNIQUEMENT si config.ACTIVE_PIPELINE=
+    # "legacy" (opt-in explicite, jamais le défaut, cf. config.py) ---
     real_result = active["result"]
     extracted_text = active["extracted_text"]
     display = active["display"]
-    doc_label = active["document"]
     doc_specificity = active.get("doc_specificity")   # CHANTIER 4 (V2)
     findings_table = active.get("findings_table", [])  # CHANTIER 4 (V2)
 
@@ -1253,12 +1277,46 @@ elif page == "📊 Portfolio Dashboard":
     st.markdown("*Historique des analyses de cette session*")
 
     history = st.session_state.get("analysis_history", [])
+    # CHOIX: les entrées d'historique ont une forme différente selon le
+    # pipeline actif (score/couleur V4 vs grade/flag legacy, cf. le handler
+    # "Run Analysis" de Transaction Analysis) — mais config.ACTIVE_PIPELINE
+    # est constant pour tout le process (pas de changement à chaud), donc
+    # TOUTES les entrées d'une même session ont la même forme. Un seul
+    # branchement sur config.ACTIVE_PIPELINE suffit, pas un par ligne.
 
     if not history:
         st.info(
             "👆 Aucune analyse effectuée cette session. Lance une analyse depuis "
             "**Transaction Analysis** pour la voir apparaître ici."
         )
+    elif config.ACTIVE_PIPELINE == "v4":
+        import grid_questions  # cf. sidebar : import différé, pas de dépendance dure à app.py au chargement
+
+        portfolio_df = pd.DataFrame([
+            {
+                "Document":       h["document"],
+                "Score":          f"{h.get('score', '—')}/100",
+                "Zone":           h.get("color") or "—",
+                "Type document":  grid_questions.DOCUMENT_TYPES[h["document_type"]]["label"] if h.get("document_type") else "—",
+                "Questions actives": h.get("questions_active", "—"),
+                "Détection type": h.get("detection_source") or "—",
+                "Analyzed At":    h["timestamp"].strftime("%Y-%m-%d %H:%M"),
+            }
+            for h in reversed(history)
+        ])
+
+        color_filter = st.multiselect(
+            "Filter by Zone", ["VERT", "JAUNE", "ORANGE", "ROUGE"],
+            default=["VERT", "JAUNE", "ORANGE", "ROUGE"],
+        )
+        filtered = portfolio_df[portfolio_df["Zone"].isin(color_filter)]
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Analyses", len(filtered))
+        col2.metric("ROUGE (Éliminatoire)", len(filtered[filtered["Zone"] == "ROUGE"]))
+        col3.metric("ORANGE", len(filtered[filtered["Zone"] == "ORANGE"]))
+        col4.metric("VERT / JAUNE", len(filtered[filtered["Zone"].isin(["VERT", "JAUNE"])]))
     else:
         portfolio_df = pd.DataFrame([
             {
@@ -1381,26 +1439,8 @@ elif page == "⚙️ Settings":
         st.caption("chunks.csv introuvable — impossible d'afficher les statistiques du corpus.")
 
 
-# ══════════════════════════════════════════════════════════════
-# PAGE 5 — ESG GRID V4 (BETA) — CC-V4-08
-# ══════════════════════════════════════════════════════════════
-# CHOIX: onglet séparé plutôt que remplacement de Transaction Analysis —
-# l'ancien pipeline reste accessible tant que la V4 n'est pas validée sur
-# au moins 2 dossiers en conditions réelles (cf. config.GRID_V4_ENABLED).
-# N'apparaît dans la navigation que si le flag est actif (cf. sidebar).
-elif page == "🧪 ESG Grid V4 (beta)":
-    st.markdown("## 🧪 ESG Grid V4 (beta)")
-    st.markdown("*Grille d'évaluation ESG à 12 questions — barème déterministe, en cours de validation*")
-
-    _active = st.session_state.get("last_analysis")
-    if not _active:
-        st.info(
-            "👆 Upload a document or paste text from **Transaction Analysis**, then "
-            "click **Run Analysis** — le résultat de la Grille V4 apparaîtra ici."
-        )
-    else:
-        # Import différé : ce module (et les modules grid_* qu'il appelle)
-        # ne doit jamais être chargé si le pipeline V4 est désactivé.
-        import grid_display
-
-        grid_display.render_grid_v4_tab(_active.get("result_v4"), project_name=_active.get("document", ""))
+# Ex-"PAGE 5 — ESG GRID V4 (BETA)" (CC-V4-08) supprimée (refactor pipeline
+# unique) : dupliquait la navigation pour un résultat déjà calculé par le
+# même clic "Run Analysis" — désormais rendu directement dans "🔍
+# Transaction Analysis" quand config.ACTIVE_PIPELINE="v4" (cf.
+# grid_display.render_grid_v4_tab, appelé depuis cette page plus haut).
