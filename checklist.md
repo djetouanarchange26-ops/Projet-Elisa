@@ -1,6 +1,12 @@
 # Journal de bord — NLP ESG Risk Intelligence
 
-Dernière mise à jour : 2026-08-06 (déploiement VPS Hostinger réussi — corpus/models transférés hors git par scp, Docker fonctionnel, ajout de Caddy en reverse proxy pour l'authentification (accès non protégé jugé insuffisant). Voir section dédiée.)
+Dernière mise à jour : 2026-08-08 (simplification du pipeline — retrait du reranker cross-encoder et du modèle Cox, remplacés par une pondération directe des scores FAISS et un grade par règle sur seuils. `analyze()` passe de ~18 min à 21.7s en local sur le cas de test standard. Voir section dédiée.)
+
+Dernière mise à jour précédente : 2026-08-08 (abstraction du backend LLM — nouveau `scripts/llm_backend.py`, bascule opt-in Ollama/Together pour contourner la dégradation de débit d'Ollama sous charge soutenue, bloquante pour la démo live du 25 août. Voir section dédiée.)
+
+Dernière mise à jour précédente : 2026-08-06 (changement de mode de collaboration — sprint 6-19 août vers la présentation banque du 25 août, zéro nouvelle feature, uniquement du correctif sur directive écrite + sessions théoriques. Voir section dédiée.)
+
+Dernière mise à jour précédente : 2026-08-06 (déploiement VPS Hostinger réussi — corpus/models transférés hors git par scp, Docker fonctionnel, ajout de Caddy en reverse proxy pour l'authentification (accès non protégé jugé insuffisant). Voir section dédiée.)
 
 Dernière mise à jour précédente : 2026-08-06 (audit perf complet — cause réelle des 20-30 min sur un rapport de 45-70 pages identifiée par mesure directe sur un document réel : PAS le thinking mode Qwen, mais un doublon de re-ranking cross-encoder + un bug de parsing qui faisait planter Pass 3. Voir section dédiée.)
 
@@ -22,7 +28,7 @@ Dernière mise à jour précédente : 2026-07-25 (points 3 ET 4 avancés — LLM
 
 - App Streamlit fonctionnelle en local (`streamlit run app.py`), déployée (Render puis migration Streamlit Cloud en cours de réglage d'accès public)
 - Corpus : 4203 chunks, 46 projets annotés (28 événements CAO / 18 contrôles), 82 documents dans `corpus/`
-- Modèle d'embedding : bascule vers `all-mpnet-base-v2` (768 dim) le 2026-07-25 — C-index 0.746 (contre 0.758 avec MiniLM, légère baisse), mais coefficient `flag1_community` plus significatif (p<0.005 contre p=0.01). Le vrai problème de différenciation n'était **pas** l'embedding — voir "Chantier ouvert" résolu ci-dessous.
+- Modèle d'embedding : bascule vers `all-mpnet-base-v2` (768 dim) le 2026-07-25 — C-index 0.746 (contre 0.758 avec MiniLM, légère baisse), mais coefficient `flag1_community` plus significatif (p<0.005 contre p=0.01). Le vrai problème de différenciation n'était **pas** l'embedding — voir "Chantier ouvert" résolu ci-dessous. ⚠️ Le C-index n'a plus de pertinence pratique depuis le retrait du Cox le 2026-08-08 (voir section dédiée) — gardé ici comme trace historique du choix d'embedding, toujours utilisé par FAISS.
 - **Intégration LLM (Ollama, `qwen3:4b-instruct`) terminée sur les 4 usages prévus** (`scripts/llm_confirm.py`, 2026-07-25) :
   1. Filtre de polarité sur `flag_scores` (corrige le vrai bug de différenciation)
   2. Filtre de polarité sur `detected_signals`/surlignage
@@ -32,10 +38,55 @@ Dernière mise à jour précédente : 2026-07-25 (points 3 ET 4 avancés — LLM
 - ⚠️ Perf non optimisée : le débit LLM se dégrade sous charge soutenue (voir "Chantier ouvert — préchauffage du cache LLM") — accepté pour l'instant, priorité aux fonctionnalités (décision utilisateur du 2026-07-25).
 - **3 des 4 fonctionnalités UI de l'étape 4 terminées** (2026-07-25) : export PDF/Excel (`scripts/export.py`, nouvelle dépendance `fpdf2`), upload multi-documents, traçabilité des preuves par flag. Support multilingue reporté. Voir section dédiée.
 - **Les 4 onglets sont maintenant branchés sur de vraies données** (plus aucun mockup) :
-  - **Transaction Analysis** : pipeline complet (extraction → FAISS → Cox → signaux)
+  - **Transaction Analysis** : pipeline complet (extraction → FAISS → signaux → grade par règle, ex-Cox — voir "Simplification du pipeline", 2026-08-08)
   - **Portfolio Dashboard** : historique des analyses de la session (`st.session_state`)
   - **Pattern Library** : fréquences et temps moyens réels calculés depuis le corpus
   - **Settings** : seuils de risk grade et k FAISS réellement fonctionnels, stats corpus en direct
+
+---
+
+## ✅ Simplification du pipeline — retrait du reranker cross-encoder et du Cox (2026-08-08)
+
+Suite directe de l'abstraction du backend LLM (section suivante) : même après la migration vers Together, une analyse restait à 194% CPU pendant plusieurs minutes sur un document réel (Mundra CGPL) — pas du fallback Ollama (0% CPU côté conteneur), mais le cross-encoder (`reranker.py`, ~90% du temps CPU estimé sur 5100+ paires chunk×candidat pour 171 chunks) et un modèle Cox fragile (46 projets, coefficients `flag2`/`flag3` non significatifs, décalage train/serve jamais résolu — voir "Chantier ouvert — préchauffage du cache LLM" ci-dessous, maintenant clos). Décision : les retirer tous les deux plutôt que continuer à les optimiser. Exception explicite aux règles du sprint ("pas de fix perf avant le 25 août"), élargie au-delà de la seule exception déjà accordée pour le backend LLM.
+
+**Remplacements** : `scripts/search.py` pondère directement le score FAISS brut par les mêmes signaux que le cross-encoder (spécificité/récence/chunk_type), sans passer par `ms-marco-MiniLM-L-6-v2`. `scripts/model.py` gagne `compute_grade()` — grade A-D à partir de `max(flag_scores)` et de seuils simples (15/35/60, **provisoires, pas encore calibrés** sur les 46 cas connus — `scripts/calibrate_thresholds.py` écrit mais pas encore lancé, 40+ min d'appels LLM). `reranker.py` et les fonctions Cox (`build_training_data`, `train_cox`, `predict_risk`, `load_cox_model`/`save_cox_model`) restent sur disque en code mort, plus appelés nulle part. `result["prediction"]` n'a plus `probability_12m`/`survival_curve`/`hazard_ratios`, seulement `risk_score`/`risk_label`/`risk_grade` — répercuté dans `app.py` (cartes Risk Assessment/Recommendation, Portfolio Dashboard, Settings), `export.py` (PDF/Excel) et `deep_analysis.py`/`llm_confirm.py` (prompts qui citaient `probability_12m`).
+
+**Mesuré** : `analyze()` sur le cas de test standard passe de ~18 min (baseline pré-Together) à **21.7s** en local (Together + sans reranker/Cox). Pas encore confirmé sur un document réel de 60-70 pages sur le VPS (objectif directive : < 3 min). **31/31 tests passent** (`test.py --unit`/`--integ`/`--business`, validé avec les vraies données du corpus + backend Together).
+
+**Effet sur le journal** : ce chantier rend obsolètes plusieurs points ouverts plus bas dans ce document — le "Chantier ouvert — préchauffage du cache LLM pour le ré-entraînement complet" (il n'y a plus de Cox à ré-entraîner) et les items de `ROADMAP_SPRINT_AOUT.md` Jour 2/3 qui prévoyaient des sessions théoriques sur le cross-encoder et le Cox. Marqué dans les sections concernées plutôt que supprimé, pour garder la trace de pourquoi ces choix avaient été pris à l'origine.
+
+**Pas fait** : calibration réelle des seuils 15/35/60 sur les 46 cas ; test de perf sur un document réel de 60-70 pages (fait seulement sur les 4 cas courts de `test.py`). Détail technique complet (fichier par fichier) dans `docs/CHANGELOG.md`.
+
+---
+
+## ✅ Abstraction du backend LLM — `llm_backend.py` (2026-08-08)
+
+Ollama en local (CPU, VPS 2 vCPU) dégrade sous charge soutenue (~17 → <7 tok/s après ~50 appels séquentiels, cause jamais identifiée avec certitude — voir "Chantier ouvert" ci-dessous) et `run_pass3` de `deep_analysis.py` timeout régulièrement. Jugé incompatible avec une démo live devant la banque le 25 août : exception explicite accordée au sprint "pas de nouveau modèle / pas de fix perf avant le 25" pour ce chantier précis.
+
+**Ce qui a été fait** : nouveau module `scripts/llm_backend.py`, fonction unique `call_llm()` qui route vers Ollama local ou Together (API compatible OpenAI) selon `config.LLM_BACKEND` (défaut `"ollama"` — aucun déploiement existant n'est affecté). Fail-open partout, fallback automatique configurable (`LLM_FALLBACK`), rate limiter simple côté cloud. Clé de cache LLM étendue pour inclure backend + modèle (le changement de backend invalide le cache existant au premier appel — comportement attendu, pas un bug). Invariants préservés : Pass 2 de `deep_analysis` toujours sans plafond `num_predict`, Pass 3 toujours `timeout=150`.
+
+**Modèle choisi** : `Qwen/Qwen3.5-9B` sur Together (pas `Qwen3.7 Max`, qui affiche explicitement le raisonnement actif par défaut).
+
+**Bug trouvé au smoke test réel post-déploiement** : `Qwen/Qwen3.5-9B` raisonne AUSSI par défaut sur Together malgré l'absence de badge "deep thinking" dans le dashboard (l'UI ne l'affiche que pour certains modèles — pas un signal fiable). Avec `confirm_risk` (`max_tokens=5`), 100% des réponses revenaient vides (`finish_reason="length"`, tout le budget de tokens consommé par `reasoning_content`) — silencieux, sans exception, donc fail-open partout sans jamais apparaître comme une erreur. Corrigé : `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` (convention vLLM/Qwen3, pas un paramètre OpenAI standard), gated sur `"qwen" in model.lower()`. Même famille de bug que `qwen3:4b` vs `qwen3:4b-instruct` déjà documentée plus haut dans ce journal (cause différente : paramètre API vs choix de variante).
+
+**Validé après le fix**, appels réels contre Together (pas mockés) : `confirm_risk` sur les 4 cas RISK/CLEAN de `llm_confirm.py` (tous corrects, 1.3-5.3s/appel), `summarize_passage` (2.3s), format Pass 1 (`ENGAGEMENT/INCIDENT/EVASIF`) conforme et parsable sans modification. Nettement plus rapide que les 25-95s/appel mesurés par endroits sur Ollama CPU sous charge.
+
+**Pas fait dans ce chantier** : validation de bout en bout sur un document réel avec `analyze()`/FAISS (venv de test sans `faiss-cpu`) ; Pass 2/Pass 3 de `deep_analysis` pas testées en conditions réelles (Pass 1 et `llm_confirm.py` oui) ; tests gold standard (prévus Jour 6 du roadmap) ; audit `docs/ARCHITECTURE.md` (prévu Jour 4/5). Détail technique complet dans `docs/CHANGELOG.md`.
+
+---
+
+## 🔄 Changement de mode de collaboration — sprint pré-présentation (2026-08-06)
+
+Deux documents ajoutés au dépôt : `ROADMAP_SPRINT_AOUT.md` (plan jour par jour, 6-19 août) et `SEMAINE_TYPE_ESG.md` (cadence hebdomadaire post-acceptation, 4h/semaine — 30 min feedback/priorisation, 2h30 dev, 1h apprentissage). Présentation à la banque (Elisa) fixée au **25 août**.
+
+**Ce qui change concrètement à partir de maintenant** :
+- **Zéro nouvelle feature** jusqu'au 25 août — uniquement des correctifs/de la stabilisation, sur directive écrite. Pas d'amélioration non sollicitée, même bien intentionnée.
+- Chaque retour d'Elisa se trie en P0 (bug/résultat faux → cette semaine), P1 (UX → cette semaine si le temps le permet), P2 (feature → backlog, hors sprint). `docs/BACKLOG.md` est prévu comme réceptacle des P1-P3 non traités dans la semaine — pas encore créé à ce jour.
+- Chaque changement de code est censé se terminer par un redéploiement (`docker compose up -d --build` sur le VPS) + un nouveau test d'Elisa — un fix non déployé ne compte pas comme fait.
+- Des sessions théoriques dédiées (pipeline, embeddings/FAISS, Cox, LLM, architecture du code) sont prévues en parallèle du travail de code, pour que l'utilisateur puisse défendre les choix de l'outil en présentation sans tout devoir à une délégation à Claude Code.
+- Explicitement reporté après le 25 août : enrichissement du corpus, changement de modèle d'embedding, toute feature Elisa qui n'est pas P0/P1. Deux items de cette liste ont finalement été traités pendant le sprint (hors plan initial, voir sections du 2026-08-08 ci-dessus) : la dégradation Ollama sous charge soutenue (contournée par le backend Together) et le ré-entraînement du Cox sur scores filtrés (rendu sans objet — le Cox a été retiré, pas ré-entraîné).
+
+Le déploiement Docker/VPS (section précédente) correspond déjà au "Jour 1" de `ROADMAP_SPRINT_AOUT.md` — fait le jour même de la rédaction du plan, en avance sur le calendrier prévu.
 
 ---
 
@@ -367,7 +418,9 @@ Validé : texte "risque" → 9 signaux détectés (inchangé) ; texte "propre" (
 
 ---
 
-## 🔍 Chantier ouvert — préchauffage du cache LLM pour le ré-entraînement complet
+## 🔍 Chantier ouvert (clos par obsolescence, 2026-08-08) — préchauffage du cache LLM pour le ré-entraînement complet
+
+**Clos, pas résolu** : le Cox a été retiré du pipeline le 2026-08-08 (voir "Simplification du pipeline" plus haut) plutôt que ré-entraîné — la question du préchauffage du cache pour cet usage précis ne se pose plus. La cause de la dégradation Ollama sous charge soutenue décrite ci-dessous, elle, reste non identifiée avec certitude ; elle a été contournée (pas expliquée) par le passage à Together sur les usages sensibles à la latence (voir "Abstraction du backend LLM"). Section gardée telle quelle pour la trace de ce qui a été tenté.
 
 **Objectif initial** : appeler `confirm_risk` sur tout le corpus (3962 paires (chunk, flag), 46 projets exploitables) pour ré-entraîner `cox_model.pkl` sur des scores cohérents avec le filtre LLM. En séquentiel : ~132 min, jugé trop long.
 
@@ -523,9 +576,9 @@ Recommandation : vendre la vérification de conformité par checklist comme le m
 cd scripts/
 python ingest.py               # chunke corpus/*.pdf et *.txt vers chunks.csv
 python annote.py               # applique flag_type (par contenu réel)/event/time_to_event depuis corpus_cao_ifc.xlsx
-python warm_llm_cache.py       # préchauffe le cache LLM sur tout le corpus — INSTABLE, voir "Chantier ouvert" avant d'utiliser sur un run long
-python pipeline.py             # re-embed + FAISS + entraîne Cox (tout, ~15-20min avec mpnet ; le Cox actuel n'est PAS ré-entraîné sur les scores filtrés LLM, voir "Chantier ouvert")
-python model.py                # ré-entraîne Cox seul (réutilise embeddings/FAISS existants)
+python warm_llm_cache.py       # préchauffe le cache LLM sur tout le corpus — INSTABLE, voir "Chantier ouvert" (clos par obsolescence) avant d'utiliser sur un run long
+python pipeline.py             # re-embed + FAISS (~15-20min avec mpnet) ; n'entraîne plus le Cox depuis le 2026-08-08, voir "Simplification du pipeline"
+python model.py                # contient encore les fonctions Cox en code mort (train_cox, predict_risk, ...) — plus appelées ; compute_grade() (le grade actuel) ne nécessite pas de ré-entraînement
 python analyze.py              # test end-to-end du pipeline d'analyse
 python compare_embeddings.py   # comparatif modèles d'embedding (C-index + gap risque/neutre), résultats dans models/embedding_comparison.json
 python llm_confirm.py          # auto-test du filtre de polarité (4 cas RISK/CLEAN connus)
