@@ -4,6 +4,7 @@ CA-CIB · Portfolio Management · Energy & Infrastructure Group
 """
 
 import html
+import logging
 import re
 import sys
 from collections import defaultdict
@@ -314,6 +315,26 @@ def _compute_document_specificity(doc_chunks):
         return None
     scores = [chunk_metadata.compute_specificity_score(c) for c in doc_chunks]
     return sum(scores) / len(scores)
+
+
+def _chunks_with_pages(pdf_text, chunks):
+    """Associe chaque chunk à son numéro de page — STUB MVP (CC-V4-09).
+
+    CHOIX: search.chunk_text() (réutilisé tel quel, cf. "Ce qu'il ne faut
+    PAS faire" de CC-V4-09) ne retourne que du texte brut, sans numéro de
+    page — il n'y a aujourd'hui aucune table d'offsets page/texte à
+    consulter ici. page=None plutôt que l'index du chunk (cf. CC-V4-08 :
+    un faux numéro de page serait trompeur dans l'Evidence explorer,
+    grid_display.py affiche "Page ?" proprement pour None). Le numéro de
+    page reste informatif, jamais scorant (grid_scoring.py ne le lit pas).
+
+    FRAGILE: à améliorer quand search.chunk_text() (ou un module dédié)
+    saura restituer un offset de page par chunk — ex. extraction
+    pdfplumber page par page en amont, puis recherche du texte de chaque
+    chunk dans son offset correspondant. Pas fait ici : `pdf_text` n'est
+    pour l'instant qu'un paramètre réservé à cet usage futur.
+    """
+    return [{"text": c, "page": None} for c in chunks]
 
 
 @st.cache_data(show_spinner=False)
@@ -700,9 +721,15 @@ st.markdown("""
 # ── Sidebar ──────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🧭 Navigation")
+    # CHOIX (CC-V4-08): onglet V4 additionnel, jamais un remplacement —
+    # n'apparaît dans la navigation que si le pipeline Grille est activé
+    # (config.GRID_V4_ENABLED, renommé depuis GRID_V3_ENABLED).
+    _nav_sections = ["🔍 Transaction Analysis", "📊 Portfolio Dashboard", "📚 Pattern Library", "⚙️ Settings"]
+    if config.GRID_V4_ENABLED:
+        _nav_sections.append("🧪 ESG Grid V4 (beta)")
     page = st.radio(
         "Section",
-        ["🔍 Transaction Analysis", "📊 Portfolio Dashboard", "📚 Pattern Library", "⚙️ Settings"],
+        _nav_sections,
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -718,6 +745,34 @@ with st.sidebar:
         st.caption("Aucune analyse cette session.")
     st.markdown("---")
     st.caption("v0.1 MVP · Données publiques IFC/CAO")
+
+    # ── Contrôles Grille V4 (beta), CC-V4-08 ──
+    # CHOIX: import de grid_questions différé ici (pas en tête de fichier)
+    # — cohérent avec la consigne de ne jamais importer les modules V4 hors
+    # d'un bloc gardé par config.GRID_V4_ENABLED (un déploiement sans les
+    # fichiers V4 ne doit pas planter au chargement de app.py).
+    if config.GRID_V4_ENABLED:
+        import grid_questions
+
+        st.markdown("---")
+        st.subheader("Grille V4 (beta)")
+
+        st.selectbox(
+            "Type de document (R11)",
+            options=[1, 2, 3, 4],
+            format_func=lambda x: grid_questions.DOCUMENT_TYPES[x]["label"],
+            index=0,
+            key="grid_v4_document_type",
+            help="Conditionne le mode de lecture et les formes de preuve admises",
+        )
+
+        st.multiselect(
+            "Modules N/A",
+            options=["B.2"],
+            default=[],
+            key="grid_v4_na_modules",
+            help="B.2 (pollution) : N/A si le projet n'a aucun vecteur de pollution",
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -814,6 +869,43 @@ if page == "🔍 Transaction Analysis":
                     doc_specificity = _compute_document_specificity(doc_chunks)
                     findings_table = _build_findings_table(result["deep_analysis"], doc_chunks)
 
+                    # --- Pipeline Grille V4 (CC-V4-08) ---
+                    # CHOIX: pipeline séparé de analyze() ci-dessus — jamais
+                    # bloquant pour l'ancien pipeline (Transaction Analysis
+                    # reste utilisable même si la V4 échoue, cf. except
+                    # ci-dessous). Import différé dans le bloc gardé par le
+                    # flag : un déploiement sans les fichiers V4 ne doit pas
+                    # planter au chargement de app.py.
+                    result_v4 = None
+                    if config.GRID_V4_ENABLED:
+                        st.write("Pipeline Grille V4 (beta) en cours...")
+                        try:
+                            import grid_analyze
+
+                            # Réutilise les chunks déjà calculés ci-dessus
+                            # (search.chunk_text) — pas de re-chunking, même
+                            # base de texte pour les deux pipelines (cf.
+                            # "Ce qu'il ne faut PAS faire", CC-V4-09).
+                            # _chunks_with_pages() reste un stub MVP
+                            # (page=None) tant que search.chunk_text() ne
+                            # restitue pas d'offset de page (cf. sa docstring).
+                            chunks_for_grid = _chunks_with_pages(extracted_text, doc_chunks)
+
+                            # Pas de grid_sections.classify_chunks() ici :
+                            # grid_analyze.analyze_grid() l'appelle déjà en
+                            # interne (cf. grid_analyze.py, CC-V4-06) — un
+                            # second appel ici serait redondant, pas une
+                            # exclusion supplémentaire.
+                            result_v4 = grid_analyze.analyze_grid(
+                                chunks_for_grid,
+                                na_modules=st.session_state.get("grid_v4_na_modules"),
+                                document_type=st.session_state.get("grid_v4_document_type", 1),
+                            )
+                            st.write("✓ Grille V4 calculée")
+                        except Exception as e:
+                            logging.error("Pipeline Grille V4 échoué : %s", e)
+                            result_v4 = None
+
                     # Résultat "actif" affiché ci-dessous — persiste tant que
                     # l'analyste ne relance pas une analyse ou ne change pas
                     # d'onglet et ne revient pas (sinon les résultats
@@ -825,6 +917,7 @@ if page == "🔍 Transaction Analysis":
                         "document":        doc_label,
                         "doc_specificity": doc_specificity,
                         "findings_table":  findings_table,
+                        "result_v4":       result_v4,
                     }
                     # Historique de session pour Portfolio Dashboard.
                     st.session_state.setdefault("analysis_history", []).append({
@@ -1269,3 +1362,28 @@ elif page == "⚙️ Settings":
         """)
     else:
         st.caption("chunks.csv introuvable — impossible d'afficher les statistiques du corpus.")
+
+
+# ══════════════════════════════════════════════════════════════
+# PAGE 5 — ESG GRID V4 (BETA) — CC-V4-08
+# ══════════════════════════════════════════════════════════════
+# CHOIX: onglet séparé plutôt que remplacement de Transaction Analysis —
+# l'ancien pipeline reste accessible tant que la V4 n'est pas validée sur
+# au moins 2 dossiers en conditions réelles (cf. config.GRID_V4_ENABLED).
+# N'apparaît dans la navigation que si le flag est actif (cf. sidebar).
+elif page == "🧪 ESG Grid V4 (beta)":
+    st.markdown("## 🧪 ESG Grid V4 (beta)")
+    st.markdown("*Grille d'évaluation ESG à 12 questions — barème déterministe, en cours de validation*")
+
+    _active = st.session_state.get("last_analysis")
+    if not _active:
+        st.info(
+            "👆 Upload a document or paste text from **Transaction Analysis**, then "
+            "click **Run Analysis** — le résultat de la Grille V4 apparaîtra ici."
+        )
+    else:
+        # Import différé : ce module (et les modules grid_* qu'il appelle)
+        # ne doit jamais être chargé si le pipeline V4 est désactivé.
+        import grid_display
+
+        grid_display.render_grid_v4_tab(_active.get("result_v4"), project_name=_active.get("document", ""))
