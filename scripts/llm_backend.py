@@ -77,29 +77,37 @@ def _resolve_options(config_key, temperature):
     return {"temperature": temperature, "max_tokens": cfg["num_predict"], "num_ctx": cfg["num_ctx"]}
 
 
-def _call_ollama(prompt, model, options, timeout):
+def _call_ollama(prompt, model, options, timeout, response_format=None):
     ollama_options = {"temperature": options["temperature"]}
     if options["max_tokens"] is not None:
         ollama_options["num_predict"] = options["max_tokens"]
     if options["num_ctx"] is not None:
         ollama_options["num_ctx"] = options["num_ctx"]
 
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": ollama_options,
+        "keep_alive": -1,
+    }
+    # CC-V4-12 (architecture 2 passes grid_prompts.py) : Ollama supporte
+    # nativement "format": "json" sur /api/generate (contraint le sampling à
+    # produire du JSON valide) — champ propre à Ollama, PAS le même
+    # mécanisme que response_format côté OpenAI-compatible ci-dessous.
+    if response_format == "json":
+        payload["format"] = "json"
+
     resp = requests.post(
         f"{config.OLLAMA_HOST}/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "options": ollama_options,
-            "keep_alive": -1,
-        },
+        json=payload,
         timeout=timeout,
     )
     resp.raise_for_status()
     return resp.json()["response"].strip()
 
 
-def _call_openai_compatible(prompt, model, base_url, api_key, options, timeout):
+def _call_openai_compatible(prompt, model, base_url, api_key, options, timeout, response_format=None):
     # Import local : openai n'est requis que si un backend cloud est utilisé
     # (cf. requirements.txt) — un déploiement 100% Ollama n'a pas besoin de
     # cette dépendance installée pour fonctionner.
@@ -109,6 +117,13 @@ def _call_openai_compatible(prompt, model, base_url, api_key, options, timeout):
     kwargs = {"temperature": options["temperature"]}
     if options["max_tokens"] is not None:
         kwargs["max_tokens"] = options["max_tokens"]
+    # CC-V4-12 : paramètre standard OpenAI-compatible — Together l'expose
+    # pour les modèles qui le supportent. FRAGILE: si le modèle configuré ne
+    # le supporte pas, Together renvoie une erreur HTTP -> _dispatch() la
+    # laisse remonter -> call_llm() bascule sur le fallback (fail-open,
+    # ADR-002), pas de comportement spécial à coder ici.
+    if response_format == "json":
+        kwargs["response_format"] = {"type": "json_object"}
 
     # BUG CORRIGÉ (2026-08-08, smoke test réel Together/Qwen3.5-9B) : Qwen3
     # raisonne par défaut même sur ce modèle "9B" sans badge "deep thinking"
@@ -135,23 +150,25 @@ def _call_openai_compatible(prompt, model, base_url, api_key, options, timeout):
     return (response.choices[0].message.content or "").strip()
 
 
-def _dispatch(backend, prompt, model, options, timeout):
+def _dispatch(backend, prompt, model, options, timeout, response_format=None):
     """Route l'appel vers le bon adaptateur. Lève une exception en cas
     d'échec (réseau, clé manquante, HTTP non-2xx, ...) — c'est call_llm() qui
     attrape et transforme ça en fail-open, pas cette fonction."""
     if backend == "ollama":
-        return _call_ollama(prompt, model, options, timeout)
+        return _call_ollama(prompt, model, options, timeout, response_format=response_format)
     if backend in _CLOUD_BACKENDS:
         spec = _CLOUD_BACKENDS[backend]
         api_key = getattr(config, spec["api_key_attr"], "")
         if not api_key:
             raise RuntimeError(f"{spec['api_key_attr']} manquante pour LLM_BACKEND={backend!r}")
         _rate_limit()
-        return _call_openai_compatible(prompt, model, spec["base_url"], api_key, options, timeout)
+        return _call_openai_compatible(
+            prompt, model, spec["base_url"], api_key, options, timeout, response_format=response_format
+        )
     raise ValueError(f"LLM_BACKEND inconnu : {backend!r}")
 
 
-def call_llm(prompt, config_key=None, temperature=0.0, timeout=60.0):
+def call_llm(prompt, config_key=None, temperature=0.0, timeout=60.0, response_format=None):
     """
     Envoie `prompt` au backend LLM actif (config.LLM_BACKEND) et retourne le
     texte de réponse (stripped), ou None en cas d'échec — jamais d'exception,
@@ -161,12 +178,19 @@ def call_llm(prompt, config_key=None, temperature=0.0, timeout=60.0):
     "summarize", "recommend", "deep_extract", "deep_synthesize") pour
     appliquer le plafond de longueur de réponse associé, ou None pour ne
     PAS plafonner.
+    response_format : None (texte libre) ou "json" (CC-V4-12, architecture
+    2 passes de grid_prompts.py) — force une sortie JSON valide côté
+    backend quand celui-ci le supporte (Ollama : "format":"json" natif ;
+    Together/OpenAI-compatible : response_format={"type":"json_object"}).
+    N'EST PAS une garantie absolue de JSON strictement parsable (modèle qui
+    ignore la contrainte, troncature) — le parsing appelant doit rester
+    tolérant (cf. grid_prompts._parse_llm_json).
     """
     options = _resolve_options(config_key, temperature)
     backend = config.LLM_BACKEND
 
     try:
-        return _dispatch(backend, prompt, config.LLM_MODEL, options, timeout)
+        return _dispatch(backend, prompt, config.LLM_MODEL, options, timeout, response_format=response_format)
     except Exception as e:
         logger.warning(f"llm_backend: backend [{backend}] injoignable (config_key={config_key!r}) : {e}")
 
@@ -174,7 +198,7 @@ def call_llm(prompt, config_key=None, temperature=0.0, timeout=60.0):
     if fallback and fallback != backend:
         fallback_model = config.LLM_MODEL_BY_BACKEND.get(fallback, config.LLM_MODEL)
         try:
-            return _dispatch(fallback, prompt, fallback_model, options, timeout)
+            return _dispatch(fallback, prompt, fallback_model, options, timeout, response_format=response_format)
         except Exception as e:
             logger.warning(f"llm_backend: fallback [{fallback}] injoignable aussi (config_key={config_key!r}) : {e}")
 

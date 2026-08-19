@@ -1,75 +1,85 @@
 """
-GRILLE ESG V4 — prompts LLM complets (directive CC-V4-05)
+GRILLE ESG V4 — prompts LLM, architecture 2 passes + JSON (directive CC-V4-12)
 =============================================================
-Réécriture complète du squelette V3 (CC-04) : règles R1-R11 intégrales et
-few-shot tirés des 4 dossiers annotés (CBG, Mundra, Aysha, Indorama). Ce
-module construit des strings et en parse d'autres — il n'appelle JAMAIS le
-LLM lui-même (pas d'import de llm_backend.py/llm_confirm.py/deep_analysis.py),
-invariant hérité de CC-04.
+RÉÉCRITURE COMPLÈTE de l'architecture à appel unique / texte libre
+(CC-V4-05 à CC-V4-11, récupérable dans l'historique git — commit 3fbf8b5
+et antérieurs). Cause racine du sur-score constaté sur 3 dossiers (Aysha
+100 au lieu de 73, Mundra 40 au lieu de 16, CBG 85 au lieu de 28-31) :
+un appel unique empilait 5+ règles éliminatoires (R2/R5/R7/R10/R11) et le
+LLM trouvait toujours une raison de dire NON avant d'avoir fini de lire
+les règles suivantes.
 
-Décisions de design actées (CC-04, confirmées V4) :
-  - Biais faux positifs (R1) : en cas d'ambiguïté, le LLM doit pencher vers
-    la réponse qui SIGNALE le risque, jamais vers celle qui le masque —
-    Elisa préfère un faux positif à un faux négatif. La réponse qui
-    "signale le risque" n'est PAS toujours OUI — pour B.3.1 (polarité
-    inversée), c'est NON qui signale le risque ; le template B.3.1 dit
-    donc explicitement "penche vers NON", jamais "OUI" tel quel.
-  - Langue : toutes les sorties LLM en français, quelle que soit la
-    langue du document source.
-  - Format de réponse : ligne par ligne (pas JSON) — cohérent avec
-    deep_analysis.py, plus robuste avec le modèle 4B utilisé.
+4 changements structurels (CC-V4-12) :
+  A. Sortie JSON forcée (plus de texte libre ligne par ligne) — cf.
+     llm_backend.call_llm(response_format="json") et _parse_llm_json().
+  B. Deux appels séquentiels par question : Passe 1 EXTRACTION (le texte
+     parle-t-il du sujet ? pas de jugement R2/R10 approfondi) puis, SI
+     found=true, Passe 2 QUALIFICATION (OUI/NON + mitigation, sur le
+     verbatim extrait en Passe 1 seulement). R5 (silence) devient
+     déterministe côté Python — cf. grid_analyze._silence_status — le LLM
+     n'est plus consulté du tout si found=false.
+  C. Polarité inversée : les prompts listent d'abord CE QUI COMPTE
+     (raisons de dire OUI), CE QUI NE COMPTE PAS ensuite.
+  D. Few-shot OUI/NON par question (FEW_SHOTS), tirés des 4 dossiers
+     annotés (CBG, Mundra, Aysha, Indorama) — aucun exemple inventé.
 
-Nouveautés V4 (CC-V4-05) :
-  - R2 (matérialisation), R5 (silence, dépend de silence_type — cf.
-    grid_questions.py), R3/R7 (mitigation à 2 portes + 4 statuts, CC-07),
-    R7bis (items ESAP jamais mitigants, cf. grid_sections.py/CC-09),
-    R8 (couches temporelles, documents Type 3 seulement), R9 (hiérarchie
-    des sources, Types 2-3), R10 (filtre de sujet SPV/prêteur/substitution
-    — évalué PAR LE LLM dans le prompt, jamais en post-traitement Python,
-    cf. "Ce qu'il ne faut PAS faire"), R11 (formes de preuve admises selon
-    document_type).
-  - Few-shot par question (_FEW_SHOT_EXAMPLES) : EXCLUSIVEMENT les cas
-    réellement rencontrés lors de l'annotation des 4 dossiers — aucun
-    exemple inventé. Les questions sans cas annoté n'ont pas de few-shot
-    (fallback "" dans get_prompt), ce n'est pas un oubli.
-  - get_prompt(question_code, context_chunks, document_type=1) : le type
-    de document conditionne R11/R8/R9/R2 (cf. CC-V4-11 ci-dessous) mais
-    ne change ni R1 ni R7bis ni R10 — ces règles sont universelles,
-    valables sur les 4 types.
-  - parse_response() : nouveau champ SUJET (R10), en plus des champs
-    hérités (MITIGATION_STATUS remplace le binaire MITIGATION de CC-02,
-    cf. CC-07 ; EVIDENCE_MESURE/EVIDENCE_DEFAILLANCE remplacent
-    EVIDENCE_MITIGATION unique pour porter le double verbatim du statut 4).
+Ce module construit des strings et en parse d'autres — il n'appelle
+JAMAIS le LLM lui-même (invariant hérité, inchangé).
 
-CORRECTIF CC-V4-11 ("Correctifs critiques Grille V4 — Soutenance
-25/08", BLOC B) — cause racine du sur-score CBG (85 au lieu de 28-31) :
-  - R2 devient CONDITIONNELLE au reading_mode (cf. _MATERIALISATION_*
-    ci-dessous), au lieu d'une règle unique trop stricte pour les
-    documents Type 1/2 (mode "instruction") : sur un ESRS de due
-    diligence, un constat documenté (fait passé, état existant, legacy
-    issue, écart relevé par le consultant) DOIT déclencher un OUI — le
-    LLM confondait un constat de due diligence avec une "vulnérabilité
-    future" et répondait NON à tort. R2 stricte (accompli seul, fait
-    daté imputé au SPV) reste inchangée pour le mode "suivi" (Types 3/4).
-  - Few-shot entièrement reconstruit pour les 12 nouveaux codes
-    (cf. grid_questions.py, BLOC A) : les anciens codes A.1.3/A.4.1/
-    B.2.3/B.4.1 n'existent plus, et plusieurs sujets ont changé de code
-    (ex. l'ancien B.2.2 "dépassement de seuils" générique devient
-    B.2.1 "Air/PM10" dans la Maquette Vierge — le few-shot Indorama sur
-    les dépassements d'état initial/géogéniques, qui porte sur la
-    qualité de l'air, a été déplacé en conséquence, PAS laissé sous
-    l'ancien code B.2.2 qui porte désormais sur l'Eau/rejet thermique).
-    Un few-shot dont le sujet ne correspond plus au code qui le porte
-    aurait pollué le prompt de la mauvaise question.
-  - Aucune question n'a plus `inverted_polarity=True` (cf.
-    grid_questions.py) : `_B31_PROMPT_TEMPLATE` et la branche qui
-    l'active dans get_prompt() ne sont plus jamais atteints — CODE MORT
-    DORMANT, conservé (convention CLAUDE.md), pas supprimé.
-  - `_ARTICULATION_B23_B41` (R2bis) : n'est plus jamais injectée
-    (question_code ne vaut plus jamais "B.2.3"/"B.4.1", ces codes
-    n'existant plus) — CODE MORT DORMANT, conservé.
+RÉORGANISATION DES RÈGLES (pas de suppression, cf. "Ce qu'il ne faut PAS
+faire" de la directive) — chaque règle historique (R1/R2/R5/R7/R7bis/R8/
+R9/R10/R11) est réaffectée à la passe où elle a le plus de sens :
+  - R1 (biais faux positifs)      -> implicite dans "CHERCHE"/"RÉPONDS OUI
+    si..." (polarité C) des deux passes, plus de mention explicite isolée
+    nécessaire — c'est tout l'objet de la réorganisation C.
+  - R2 (matérialisation)          -> Passe 1 (EXTRACTION) : "CE QUI COMPTE
+    COMME CORRESPONDANCE" / "CE QUI NE COMPTE PAS", conditionné au
+    reading_mode (repris de _MATERIALISATION_INSTRUCTION/_SUIVI, CC-V4-11).
+  - R5 (silence)                  -> déterministe Python entre les passes
+    (grid_analyze.py), plus jamais un jugement LLM. cf. décision ci-dessous.
+  - R7/R3 (mitigation 2 portes, 4 statuts) -> Passe 2 (QUALIFICATION).
+  - R7bis (ESAP jamais mitigant)  -> les deux passes : un item ESAP DOIT
+    être trouvé en Passe 1 (found=true — c'est un fait pertinent pour le
+    risque, cf. grid_analyze.py historique "un item ESAP renseigne le
+    risque") mais ne peut JAMAIS être crédité comme mitigation en Passe 2.
+    ÉCART VOLONTAIRE PAR RAPPORT À LA DIRECTIVE : l'exemple de prompt
+    d'extraction fourni listait "un item d'ESAP" dans "CE QUI NE COMPTE
+    PAS" — appliqué littéralement, ça aurait fait disparaître le
+    déclencheur de risque que R7bis (CC-09/CC-V4-04) a spécifiquement
+    corrigé. Gardé comme trouvaille valide côté risque, exclu seulement
+    côté mitigation (ce que R7bis a toujours voulu dire).
+  - R8 (couches temporelles, Type 3) -> Passe 1 (quel verbatim appartient
+    à la bonne période, avant même de juger le fond).
+  - R9 (hiérarchie des sources, Types 2-3) -> Passe 2 (une déclaration
+    client contredite par un auditeur ne peut jamais servir de mitigation
+    — c'est un jugement sur la CRÉDIBILITÉ d'une preuve de mitigation).
+  - R10 (filtre de sujet)         -> Passe 1 (champ `subject` de
+    l'extraction) ; Passe 2 consomme `subject` en entrée, ne le
+    réévalue pas. ÉCART VOLONTAIRE : le schéma JSON donné dans la
+    directive ne prévoyait que 3 valeurs (SPV/LENDER/AMBIGUOUS) — étendu
+    aux 5 catégories déjà validées et testées (CC-V4-05/CC-V4-09) :
+    SPV/LENDER/SUBSTITUTION/AMBIGUOUS/INDIRECT. Réduire à 3 aurait fait
+    régresser la distinction SUBSTITUTION (verbatim de remplacement
+    trouvé sur la SPV) et INDIRECT (réaction d'un tiers, non imputable),
+    toutes deux ajoutées par des directives dédiées antérieures.
+  - R11 (formes de preuve selon document_type) -> Passe 2 (Porte 2 de la
+    mitigation), via {proof_forms_rule} — inchangé dans le fond.
+
+DÉCISION R5 (silence) — PAS le mécanisme binaire donné littéralement par
+la directive (`_SILENCE_MEANS_RISK = {"B.3.1", "B.3.2"}` sinon NON) :
+appliqué tel quel, ce mécanisme aurait fait perdre la distinction
+INCONNU/NON déjà validée (CC-08) pour B.2.1/B.2.2 (silence sur un
+dépassement de seuil = "on ne sait pas", pas "pas de risque" — sans quoi
+NE PAS MESURER redeviendrait plus avantageux que mesurer, cf.
+grid_scoring._apply_b21_b22_lock, verrou construit exactement pour ça).
+Le besoin réel de la directive (B.3.1/B.3.2 : le silence CONFIRME
+l'absence que la question demande, donc OUI direct) est un cas
+particulier au-dessus du mécanisme existant, pas un remplacement complet
+— cf. grid_analyze._SILENCE_CONFIRMS_ABSENCE, qui garde silence_type
+(evenement/etat) comme défaut et ne fait dévier que B.3.1/B.3.2 vers OUI.
 """
 
+import json
 import logging
 import re
 
@@ -78,7 +88,9 @@ import grid_questions
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Règles dynamiques selon le type de document (R8, R9, R11)
+# Règles dynamiques selon le type de document (R2/R8/R9/R11) — reprises
+# telles quelles de l'architecture précédente, contenu inchangé, seul le
+# point d'injection change (répartition Passe 1 / Passe 2 ci-dessus).
 # ============================================================================
 
 _PROOF_FORMS_INSTRUCTION = """Trois formes admises + UNE QUATRIÈME sur document d'instruction :
@@ -93,512 +105,520 @@ _PROOF_FORMS_SUIVI = """Trois formes admises, aucune autre :
 - vérification par un tiers indépendant
 Un plan seul reste au statut 2, même budgété."""
 
-_TEMPORAL_RULE_TYPE3 = """R8 — COUCHES TEMPORELLES (document Type 3) :
-Étiqueter chaque verbatim avant affectation :
-- Couche 1 — résumé antérieur : contexte, faits avant la période auditée. N'ALIMENTE PAS le score.
-- Couche 2 — période auditée : SEULE couche qui alimente le score.
-- Couche 3 — observation postérieure : mission terrain récente. N'alimente pas le score.
-ATTENTION A.1.1 : les rapports CAO résument souvent des manifestations historiques. Vérifier la couche temporelle avant de cocher OUI."""
+_TEMPORAL_RULE_TYPE3 = """COUCHES TEMPORELLES (document Type 3) — étiqueter le verbatim avant de répondre :
+- Couche 1 — résumé antérieur : contexte, faits avant la période auditée. NE COMPTE PAS.
+- Couche 2 — période auditée : SEULE couche qui compte.
+- Couche 3 — observation postérieure : mission terrain récente. NE COMPTE PAS.
+ATTENTION : les rapports CAO résument souvent des manifestations historiques. Vérifier la couche temporelle avant de répondre found=true."""
 
 _TEMPORAL_RULE_OTHER = ""  # Pas de règle temporelle pour Type 1, 2, 4
 
-# --- R2 — matérialisation, conditionnelle au reading_mode (CC-V4-11) ---
-# CHOIX: R2 stricte ("fait daté, survenu, attribué au SPV") est correcte
-# pour un document de SUIVI rétrospectif (Types 3/4) mais trop stricte
-# pour un document d'INSTRUCTION (Types 1/2, due diligence pré-closing) —
-# un ESRS documente des CONSTATS (état existant, legacy issue, écart
-# relevé) qui ne sont pas des "événements survenus pendant une période de
-# monitoring" mais qui DOIVENT déclencher un OUI : c'est précisément
-# l'objet de la due diligence. Cause racine du sur-score CBG (85 au lieu
-# de 28-31, cf. directive CC-V4-11) : le LLM appliquait la version
-# stricte à un document Type 1 et traitait des constats documentés (540
-# plaignants, airshed dégradé) comme des "vulnérabilités futures".
-_MATERIALISATION_INSTRUCTION = """R2 — MATÉRIALISATION (mode INSTRUCTION — Type 1/2, due diligence) :
-Un CONSTAT DOCUMENTÉ dans le rapport de due diligence déclenche OUI. Cela inclut :
-- un fait passé avéré (déplacement, pollution, plainte) ;
-- un état existant documenté (airshed dégradé, absence de baseline) ;
-- un legacy issue non résolu (griefs historiques non compensés) ;
-- un écart de conformité constaté par le consultant.
-NE déclenche PAS un OUI en mode instruction :
-- une vulnérabilité théorique sans constat factuel ;
-- un risque mentionné uniquement dans l'analyse d'impact (ESIA) sans constat terrain ;
-- un engagement futur du sponsor sans début d'exécution."""
-
-_MATERIALISATION_SUIVI = """R2 — MATÉRIALISATION (mode SUIVI — Type 3/4, monitoring rétrospectif) :
-Seul un FAIT DATÉ, SURVENU durant la période de monitoring, ATTRIBUÉ AU PROJET (SPV) déclenche un OUI.
-Vérifier : verbe au passé accompli + fait daté + attribution causale au projet.
-NE déclenche PAS un OUI en mode suivi :
-- un droit, une politique, une procédure ;
-- une vulnérabilité future, un risque potentiel ;
-- un constat d'une période antérieure déjà couvert dans un précédent rapport."""
-
-_HIERARCHY_RULE_TYPE23 = """R9 — HIÉRARCHIE DES SOURCES :
+_HIERARCHY_RULE_TYPE23 = """HIÉRARCHIE DES SOURCES (pour juger une preuve de mitigation) :
 1. Constat de l'auditeur indépendant (CAO, panel, expert tiers)
 2. Observation directe en visite de terrain
 3. Donnée chiffrée fournie par un tiers (labo, régulateur)
 4. Témoignage de plaignant
 5. Déclaration non étayée du client
-RÈGLE : une déclaration client contredite par un constat d'auditeur dans le même document ne peut JAMAIS servir de mitigation."""
+RÈGLE : une déclaration client contredite par un constat d'auditeur dans le même document ne peut JAMAIS servir de mitigation (statut NON_FORME_INSUFFISANTE au mieux)."""
 
 _HIERARCHY_RULE_OTHER = ""
 
-# --- R2bis — articulation B.2.3 / B.4.1 (correction V4) ---
-# CODE MORT DORMANT (CC-V4-11) : B.2.3 et B.4.1 n'existent plus dans
-# grid_questions.py (absents de la Maquette Vierge, cf. BLOC A) — la
-# condition d'injection dans get_prompt() (question_code in ("B.2.3",
-# "B.4.1")) ne matche donc plus jamais. Conservé (convention CLAUDE.md :
-# jamais de suppression silencieuse) au cas où un besoin similaire
-# (articulation entre deux questions pollution) réapparaîtrait.
-# CHOIX: injectée uniquement pour B.2.3 et B.4.1 (cf. get_prompt), pas dans
-# toutes les questions du template standard — évite de gonfler le prompt de
-# règles hors-sujet pour les 9 autres questions qui partagent ce template.
-# Corrige un sur-classement observé : un même verbatim mentionnant des
-# impacts sanitaires (irritations, maladies) liés à un REJET CHRONIQUE
-# AUTORISÉ déclenchait à tort B.2.3 (réservée aux événements ACCIDENTELS)
-# EN PLUS de B.4.1 — les deux questions ne doivent partager un verbatim que
-# si le texte décrit RÉELLEMENT un événement accidentel distinct.
-_ARTICULATION_B23_B41 = """R2bis — ARTICULATION B.2.3 / B.4.1 : ne pas confondre un rejet CHRONIQUE
-et un événement ACCIDENTEL.
-- B.2.3 = un ÉVÉNEMENT PONCTUEL ET ACCIDENTEL : déversement accidentel,
-  fuite, émission hors contrôle, rejet non maîtrisé — un fait qui sort du
-  fonctionnement normal/autorisé de l'installation.
-- B.4.1 = un DOMMAGE SANITAIRE sur des personnes, quelle qu'en soit
-  l'origine — y compris un rejet CHRONIQUE et AUTORISÉ (ex : eaux de
-  rejet habituelles d'une installation, dans le cadre de son permis) qui
-  cause des irritations, maladies ou blessures documentées.
-UN REJET CHRONIQUE AUTORISÉ QUI CAUSE UN DOMMAGE SANITAIRE ALIMENTE
-UNIQUEMENT B.4.1, JAMAIS B.2.3 — l'autorisation/le caractère habituel du
-rejet exclut par définition l'« événement hors contrôle » que B.2.3
-exige. B.2.3 et B.4.1 ne peuvent se déclencher sur le MÊME verbatim que si
-ce verbatim décrit explicitement un événement accidentel (déversement,
-fuite) distinct du fonctionnement normal."""
+# --- Matérialisation (R2), conditionnelle au reading_mode (CC-V4-11,
+# reprise telle quelle — contenu déjà validé, seule la destination change :
+# Passe 1 au lieu d'un bloc de règles dans l'appel unique) ---
+_MATERIALISATION_INSTRUCTION = """EN MODE INSTRUCTION (due diligence pré-closing) :
+- Un fait passé documenté (déplacement, pollution, plainte)
+- Un état existant constaté (airshed dégradé, absence de baseline)
+- Un legacy issue non résolu (griefs historiques non compensés)
+- Un écart de conformité constaté par le consultant
+- Une condition non remplie documentée dans l'ESRS/ESIA"""
 
-# --- Règle de silence (R5) selon silence_type (cf. grid_questions.py, CC-08) ---
-# CHOIX: deux variantes courtes, cohérentes avec grid_questions.SILENCE_VALUES
-# — pas de nouvelle sémantique inventée ici, juste la formulation prompt de
-# ce qui est déjà décidé et scoré côté grid_scoring.py.
-_SILENCE_EVENEMENT = (
-    "Question d'ÉVÉNEMENT : si aucune mention pertinente n'est trouvée dans "
-    "les passages, réponds NON — l'absence de trace d'un fait daté vaut "
-    "absence du fait (pas de risque)."
-)
-_SILENCE_ETAT = (
-    "Question d'ÉTAT/SYSTÈME : si aucune mention pertinente n'est trouvée "
-    "dans les passages, réponds INCONNU, JAMAIS NON — l'absence de "
-    "description d'un système ou d'un état ne permet pas de conclure à "
-    "son absence."
-)
+_MATERIALISATION_SUIVI = """EN MODE SUIVI (monitoring rétrospectif) :
+- Un fait daté survenu durant la période de monitoring
+- Un constat de terrain de l'auditeur
+- Une mesure défaillante documentée"""
+
+# --- R10, filtre de sujet — 5 catégories (SPV/LENDER/SUBSTITUTION/
+# AMBIGUOUS/INDIRECT), cf. docstring du module pour la justification de
+# l'extension par rapport aux 3 valeurs de l'exemple de la directive. ---
+_SUBJECT_RULE = """IDENTIFIER LE SUJET (qui est visé par le passage ?) :
+- SPV : société de projet, sponsor, contractants, installation — le manquement est imputable au projet.
+- LENDER : institution financière, auditeur, mécanisme de recours (ex. plainte visant l'IFC/la SFI, pas la SPV).
+- SUBSTITUTION : le passage principal vise le prêteur, MAIS un autre passage des PASSAGES DU RAPPORT documente le même fait avec le CLIENT/la SPV pour sujet — dans ce cas, extraire CE second verbatim, sujet=SPV, pas LENDER.
+- AMBIGUOUS : le passage ne permet pas de trancher avec certitude qui est visé.
+- INDIRECT : le projet est concerné indirectement (réaction d'un tiers, contexte externe) mais aucun manquement n'est imputable à la SPV elle-même.
+Ne JAMAIS résoudre une ambiguïté de sujet par défaut vers SPV — un doute sur QUI est visé n'est pas un doute sur CE QUI s'est passé."""
+
+_VALID_SUBJECTS = ("SPV", "LENDER", "SUBSTITUTION", "AMBIGUOUS", "INDIRECT")
 
 # ============================================================================
-# Templates
+# Templates — Passe 1 (EXTRACTION)
 # ============================================================================
 
-# R1 (biais faux positifs) intégré dans les deux templates ci-dessous — cf.
-# docstring du module. Le mot "ambiguïté" et la formulation "penche vers"
-# sont repris tels quels de CC-04, ne pas les retirer (cf. "Ce qu'il ne
-# faut PAS faire" de CC-V4-05).
-_STANDARD_PROMPT_TEMPLATE = """Tu es un analyste ESG spécialisé dans le financement de projets d'infrastructure. Tu analyses un rapport pour répondre à une question de la grille d'évaluation ESG V4.
+_EXTRACTION_PROMPT = """Tu extrais des faits d'un rapport ESG pour une question de la grille d'évaluation.
+
+QUESTION : {question_r}
 
 TYPE DE DOCUMENT : {document_type_label}
 MODE DE LECTURE : {reading_mode}
 
-QUESTION DE RISQUE :
-{question_r}
-
-PASSAGES DU RAPPORT :
+PASSAGES :
 {context_chunks}
 
-=== RÈGLES D'ÉVALUATION ===
+=== CE QUE TU CHERCHES ===
 
-R1 — BIAIS FAUX POSITIFS : en cas d'ambiguïté ou de doute persistant après application des règles ci-dessous, penche vers OUI (la réponse qui SIGNALE le risque) plutôt que vers celle qui le masque, et explique ton doute dans CONFIDENCE.
+CHERCHE un passage qui correspond à la question. Voici ce qui COMPTE comme correspondance :
 
 {materialisation_rule}
 
-R5 — SILENCE :
-{silence_rule}
+CE QUI NE COMPTE PAS (dans tous les modes) :
+- Une vulnérabilité théorique sans constat factuel ("le projet pourrait...")
+- Un plan futur non commencé ("sera développé", "to be prepared")
+- Un scénario d'urgence hypothétique (plans d'urgence)
 
-R3/R7 — MITIGATION (si risque = OUI) :
-Deux portes séquentielles. Ne pas chercher la porte 2 si la porte 1 échoue.
-
-PORTE 1 — le temps du verbe.
-Seul l'accompli passe. Will / plans to / proposes / to be prepared → statut 1 (gain = 0).
-
-PORTE 2 — la forme de preuve.
-{proof_forms_rule}
-Un plan, une procédure, une politique, un recrutement, une formation, un engagement verbal = ÉCHEC → statut 2 (gain = 0).
-
-Les 4 statuts :
-1. NON_INTENTION — échec porte 1
-2. NON_FORME_INSUFFISANTE — OK porte 1, échec porte 2
-3. OUI_PROUVEE — OK portes 1 et 2
-4. OUI_DEFAILLANTE — OK portes 1 et 2, MAIS le document établit que CETTE MÊME MESURE (celle citée en EVIDENCE_MESURE) n'a pas produit son effet ou a été interrompue. EVIDENCE_DEFAILLANCE doit porter EXPLICITEMENT sur la mesure décrite en EVIDENCE_MESURE — pas sur une autre mesure, pas sur un problème général du projet, pas sur une simple conjonction concessive (however/although/despite) isolée sans lien de cause démontré avec CETTE mesure. Si le lien entre les deux passages n'est pas explicite dans le texte, ne PAS conclure au statut 4 — rester au statut 3 (OUI_PROUVEE). Citer les DEUX passages, chacun portant sur la même mesure.
-
-R7bis — ITEMS ESAP : un item d'ESAP = obligation non encore remplie. Alimente toujours le risque, jamais la mitigation.
-
-R10 — FILTRE DE SUJET : identifier le sujet du manquement.
-- Sujet = société de projet, sponsor, contractants, installation → alimente le score → SUJET: SPV.
-- Sujet = institution financière, auditeur, mécanisme de recours → N'ALIMENTE PAS le score → SUJET: PRÊTEUR. Chercher un verbatim de substitution portant sur le même fait avec le client/la SPV pour sujet AVANT de faire basculer la réponse (si trouvé → SUJET: SUBSTITUTION, réponds sur la base de ce nouveau verbatim).
-- Sujet ambigu ou non déterminable avec certitude (le passage ne permet pas de trancher qui est visé) → NE PAS attribuer automatiquement le manquement à la SPV : réponds NON (ou repli silence si aucun passage n'est réellement exploitable) → SUJET: AMBIGU.
-- Le projet est concerné INDIRECTEMENT (réaction d'un tiers, contexte externe au projet) mais AUCUN manquement n'est imputable à la SPV/au projet lui-même → réponds NON → SUJET: INDIRECT.
-Seul un manquement CLAIREMENT imputable à la SPV/au projet peut déclencher OUI. Le biais R1 (pencher vers OUI en cas de doute) s'applique au contenu du risque, JAMAIS à l'attribution du sujet — un doute sur QUI est visé n'est pas un doute sur CE QUI s'est passé, et ne se résout jamais par défaut vers la SPV.
-
-{articulation_rule}
+CAS PARTICULIER — ITEM D'ESAP (obligation à faire, pas encore remplie) :
+Un item d'ESAP COMPTE quand même comme correspondance (found=true) — c'est un manquement documenté, pas une vulnérabilité théorique. Le signaler dans `brief` ("item ESAP"). Ce n'est JAMAIS une preuve de mitigation (tranché en Passe 2, pas ici).
 
 {temporal_rule}
 
-{hierarchy_rule}
+=== SUJET ===
 
-{few_shot_section}
+{subject_rule}
 
-Réponds TOUJOURS en français, quelle que soit la langue du texte.
+{few_shot_extraction}
 
-RÉPONDS EXACTEMENT DANS CE FORMAT (une ligne par champ) :
-STATUS: OUI ou NON ou INCONNU
-EVIDENCE_R: [passage exact entre guillemets — ou vide]
-PAGE: [numéro ou "inconnue"]
-MITIGATION_STATUS: NON_INTENTION ou NON_FORME_INSUFFISANTE ou OUI_PROUVEE ou OUI_DEFAILLANTE ou N/A
-EVIDENCE_MESURE: [passage de la mesure — ou vide]
-EVIDENCE_DEFAILLANCE: [passage de la défaillance si statut 4, portant sur la MÊME mesure — ou vide]
-SUJET: SPV ou PRÊTEUR ou SUBSTITUTION ou AMBIGU ou INDIRECT
-CONFIDENCE: [explication du doute — ou vide]
+Réponds en français dans "brief" (justification), quelle que soit la langue du texte source. "verbatim" reste tel quel dans sa langue d'origine — c'est une citation exacte, jamais une traduction.
+
+Réponds UNIQUEMENT en JSON valide, sans backticks markdown, sans texte avant ou après :
+{{"code": "{code}", "found": true/false, "verbatim": "extrait exact du passage, copié tel quel, max 200 mots, ou null", "page": numéro ou null, "subject": "SPV/LENDER/SUBSTITUTION/AMBIGUOUS/INDIRECT ou null si found=false", "brief": "12 mots max expliquant pourquoi ce passage correspond, ou pourquoi rien ne correspond"}}
 """
 
-# CODE MORT DORMANT (CC-V4-11) : plus aucune question de grid_questions.py
-# n'a inverted_polarity=True depuis la restauration Maquette Vierge (BLOC
-# A) — cette branche n'est donc plus jamais sélectionnée par get_prompt().
-# Conservée (convention CLAUDE.md : jamais de suppression silencieuse) au
-# cas où une future question inversée serait réintroduite par Elisa.
-_B31_PROMPT_TEMPLATE = """Tu es un analyste ESG spécialisé. Tu évalues si des mesures de compensation environnementale (offsets) ou un suivi écologique ont été EFFECTIVEMENT DÉPLOYÉS.
+# ============================================================================
+# Templates — Passe 2 (QUALIFICATION)
+# ============================================================================
 
-TYPE DE DOCUMENT : {document_type_label}
+_QUALIFICATION_PROMPT = """Tu qualifies un fait extrait d'un rapport ESG.
+
+QUESTION DE RISQUE : {question_r}
+QUESTION DE MITIGATION : {question_a}
 MODE DE LECTURE : {reading_mode}
+SUJET IDENTIFIÉ (Passe 1, ne pas réévaluer) : {subject}
 
-QUESTION (POLARITÉ INVERSÉE — NON = risque) :
-{question_r}
+VERBATIM EXTRAIT :
+"{verbatim}"
 
-PASSAGES DU RAPPORT :
-{context_chunks}
+=== DÉCISION SUR LE RISQUE (R) ===
 
-=== RÈGLES ===
-R1 — BIAIS FAUX POSITIFS : en cas d'ambiguïté ou de doute persistant, penche vers NON (la réponse qui SIGNALE le risque ICI, à l'inverse du schéma standard) et explique ton doute dans CONFIDENCE.
-- NON = risque (−15 pts). OUI = favorable (0 pts).
-- Un inventaire, une étude de faisabilité, un plan non exécuté = NON.
-- Seule une mesure EFFECTIVEMENT DÉPLOYÉE = OUI.
+RÉPONDS OUI si le verbatim décrit un fait qui correspond à la question ET dont le sujet est le projet (SPV) ou ses opérations — même si c'est un rapport du prêteur qui le documente. Un impact physique constaté par un rapport CAO reste un impact du PROJET.
+
+RÉPONDS NON_ARGUMENTE (valeur JSON "NA_ARGUMENTE") si le verbatim indique EXPLICITEMENT que la norme/le standard ne s'applique pas à ce projet, avec un motif donné (ex. "PS5 non déclenchée, maîtrise foncière en zone franche") — distinct d'un NON simple : le texte argumente activement l'inapplicabilité, ce n'est pas juste l'absence de risque.
+
+RÉPONDS NON si :
+- Le sujet du manquement est LENDER (supervision IFC/prêteur), pas SPV/SUBSTITUTION.
+- Le sujet est AMBIGUOUS ou INDIRECT (ne jamais attribuer par défaut à la SPV).
+- Le verbatim décrit un fait d'une période antérieure déjà couvert (Type 3 uniquement).
+
+{hierarchy_rule}
+
+CAS PARTICULIER — retrait de bailleur (A.2.2) :
+Un retrait documenté est un OUI même si c'est un fait passé. La question demande si ça s'est produit, pas si c'est un risque futur.
+
+{few_shot_qualification}
+
+=== SI OUI — DÉCISION SUR LA MITIGATION (A) ===
+
+Cherche dans le verbatim une preuve de mitigation correspondant à : {question_a}
+
+PORTE 1 — La mesure existe-t-elle (temps du verbe) ?
+- Verbe accompli ("a été installé", "a été signé", "were processed and closed") → Porte 2.
+- Verbe futur/conditionnel/infinitif d'obligation ("sera installé", "to be prepared") → NON_INTENTION, gain = 0.
+
+PORTE 2 — La forme de preuve (si Porte 1 passée) :
 {proof_forms_rule}
+Un plan, une procédure, une politique, un recrutement, une formation, un engagement verbal = ÉCHEC → NON_FORME_INSUFFISANTE, gain = 0.
 
-SI TU RÉPONDS NON (= risque), évalue aussi la sous-question de mitigation :
-QUESTION DE MITIGATION : « Compensation vérifiée par un tiers et résultats de suivi documentés ? »
+Si les deux portes passent :
+- Aucune défaillance de CETTE MÊME mesure documentée dans le verbatim → OUI_PROUVEE.
+- Le verbatim établit que CETTE MÊME mesure n'a pas produit son effet ou a été interrompue (pas une conjonction concessive isolée sans lien de cause démontré avec CETTE mesure) → OUI_DEFAILLANTE, en citant les DEUX passages (verbatim_a_mesure ET verbatim_a_defaillance, chacun portant sur la même mesure). Si le lien n'est pas explicite dans le texte, rester à OUI_PROUVEE.
 
-{silence_rule}
-{few_shot_section}
+Rappel R7bis : un item d'ESAP (obligation non encore remplie) n'est JAMAIS une preuve de mitigation, quelle que soit sa formulation.
 
-Réponds TOUJOURS en français.
+Réponds en français dans "brief_r"/"brief_a" (justification), quelle que soit la langue du texte source. Les champs "verbatim_*" restent tels quels dans leur langue d'origine — ce sont des citations exactes, jamais des traductions.
 
-RÉPONDS EXACTEMENT DANS CE FORMAT :
-STATUS: OUI ou NON ou INCONNU
-EVIDENCE_R: [passage exact — ou vide]
-PAGE: [numéro ou "inconnue"]
-MITIGATION_STATUS: NON_INTENTION ou NON_FORME_INSUFFISANTE ou OUI_PROUVEE ou OUI_DEFAILLANTE ou N/A
-EVIDENCE_MESURE: [passage de mitigation — ou vide]
-EVIDENCE_DEFAILLANCE: [si statut 4, portant sur la MÊME mesure — ou vide]
-SUJET: SPV ou PRÊTEUR ou SUBSTITUTION ou AMBIGU ou INDIRECT
-CONFIDENCE: [si doute — ou vide]
+Réponds UNIQUEMENT en JSON valide, sans backticks markdown, sans texte avant ou après :
+{{"code": "{code}", "status": "OUI/NON/NA_ARGUMENTE", "confidence": "HIGH/LOW", "mitigation_status": "OUI_PROUVEE/OUI_DEFAILLANTE/NON_INTENTION/NON_FORME_INSUFFISANTE ou null si status != OUI", "verbatim_r": "extrait risque, ou vide", "verbatim_a_mesure": "extrait mesure de mitigation, ou vide", "verbatim_a_defaillance": "extrait défaillance si OUI_DEFAILLANTE, ou null", "brief_r": "10 mots max", "brief_a": "10 mots max, ou vide"}}
 """
 
 # ============================================================================
 # Few-shot par question — cas réels des 4 dossiers annotés (CBG, Mundra,
-# Aysha, Indorama). AUCUN exemple inventé — cf. "Ce qu'il ne faut PAS
-# faire" de CC-V4-05. Les questions absentes de ce dict n'ont simplement
-# pas de cas annoté disponible pour leur sujet précis.
+# Aysha, Indorama), 1 OUI + 1 NON max par question, None si aucun cas
+# annoté (jamais d'exemple inventé, cf. "Ce qu'il ne faut PAS faire").
 #
-# RECONSTRUIT EN ENTIER POUR CC-V4-11 (BLOC A + BLOC B) : les 12 codes de
-# grid_questions.py ont changé (Maquette Vierge). Chaque exemple existant
-# a été replacé sous le code dont le SUJET correspond réellement,
-# jamais laissé sous son ancien code par défaut :
-#   - A.1.1 (nouveau, fusion "blocage physique OU grève") reçoit les
-#     exemples de l'ancien A.1.1 (grève) ET de l'ancien A.1.3 (blocage
-#     communautaire, piège de polarité).
-#   - A.1.2 (actions en justice suspensives) reçoit les exemples de
-#     l'ancien A.2.1 (recours juridique).
-#   - A.2.1 (suspension/annulation de permis) reçoit les exemples de
-#     l'ancien A.3.1 (permis/conformité administrative).
-#   - B.1.1 (perte de subsistance sans compensation) garde ses propres
-#     exemples + le nouveau cas CBG legacy grievances (BLOC B point 2).
-#   - B.2.1 (Air/PM10) reçoit l'exemple de poussières/filtres CBG (déjà
-#     un sujet Air/particules dans l'ancien B.2.2) + le nouveau cas
-#     Indorama airshed/WHO limits (BLOC B point 3) : cet exemple est un
-#     constat de qualité de l'AIR, donc placé sous B.2.1 (Air), PAS sous
-#     B.2.2 qui porte désormais sur l'Eau/rejet thermique — la directive
-#     CC-V4-11 le nommait "B.2.2" en supposant l'ancien découpage
-#     générique "dépassement de seuils", devenu obsolète après BLOC A.
-#   - B.3.1 (absence de données de référence baseline) reçoit l'exemple
-#     de refus de partage de données de monitoring (Mundra) — un refus
-#     de fournir des données de référence est un cas topique pour cette
-#     question, même si l'exemple d'origine portait sur le suivi
-#     écologique plutôt que socio-économique.
-#   - Sans équivalent net dans les 4 dossiers annotés pour le nouveau
-#     sujet : A.2.2 (retrait bailleur), A.3.1 (injonction d'arrêt), A.3.2
-#     (accident structurel), B.1.2 (déplacement non réinstallé — l'ancien
-#     B.1.2 portait sur le mécanisme de griefs, sujet disparu), B.2.2
-#     (rejet thermique eau), B.3.2 (suivi RSE périodique) — fallback ""
-#     dans get_prompt(), pas d'exemple inventé.
+# 2 ÉCARTS VOLONTAIRES PAR RAPPORT À LA DIRECTIVE (mêmes principes que la
+# correction déjà appliquée en CC-V4-11, cf. grid_questions.py) :
+#   - B.1.2 : les exemples donnés (griefs CBG "31 grievances.../24
+#     addressed", mécanisme Aysha) portent sur le MÉCANISME DE GRIEFS,
+#     sujet de l'ancien B.1.2 (pré-Maquette-Vierge). Le B.1.2 actuel porte
+#     sur le "Déplacement involontaire de populations non réinstallées"
+#     — sujet différent, aucun des deux exemples n'y répond réellement.
+#     Laissés à None plutôt que mal étiquetés.
+#   - B.2.2 : les exemples donnés (airshed CBG, bruit nocturne Indorama)
+#     portent sur la qualité de l'AIR, déjà couverts sous B.2.1 (qui les
+#     a littéralement, "oui" CBG PM10/poussières). B.2.2 porte désormais
+#     sur le "Défaut de modélisation du rejet thermique (Eau)" — aucun
+#     des deux dossiers annotés ne documente un défaut de modélisation
+#     thermique. Laissés à None plutôt que dupliqués sous le mauvais sujet.
 # ============================================================================
 
-_FEW_SHOT_EXAMPLES = {
-    "A.1.1": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-FAUX POSITIF — droit vs fait (CBG) :
-« CBG workers have the right to freely associate in unions as well as a right to strike. »
-« strike » = droit, pas événement → NON
-
-FAUX POSITIF — fin normale vs blocage (CBG) :
-« Prepare Worker Demobilization Plans for future demobilization events »
-Démobilisation planifiée, pas opposition → NON
-
-PIÈGE R8 — couche temporelle (Mundra/Type 3) :
-Les rapports CAO résument souvent des manifestations historiques. Vérifier TOUJOURS la couche temporelle. Un blocage cité en résumé de la période 2013-2015 NE DÉCLENCHE PAS A.1.1 sur la période 2017-2025.
-
-PIÈGE DE POLARITÉ — qui bloque qui ? :
-A.1.1 couvre un blocage SUBI par le projet (grève du personnel OU blocage physique par des riverains/communautés tierces). Si c'est au contraire le PROJET qui restreint l'accès de la communauté (routes fermées, forces de sécurité), ce n'est PAS un fait imputable à la communauté ou au personnel — ne pas cocher A.1.1 pour ce cas ; vérifier si un autre thème de la grille (ex. B.1.1, perte de moyens de subsistance) documente une conséquence de cette restriction.
-""",
-
-    "A.1.2": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-PIÈGE R10 — filtre de sujet (Mundra) :
-« active litigation proceedings in U.S. federal court involving the affected communities and IFC »
-Sujet : la SFI. L'affaire Jam c. SFI vise le prêteur, pas la SPV → ÉCARTÉ par R10.
-Vérifier : existe-t-il un recours dirigé contre la SPV ? Non → NON.
-
-PIÈGE — clôture ≠ résolution :
-Une clôture de dossier CAO pour épuisement ou absence de relation commerciale ≠ résolution du grief E&S. Lire le MOTIF.
-
-PIÈGE — dérogation locale ≠ dérogation prêteur :
-Une dérogation obtenue d'un régulateur local ne vaut pas dérogation aux standards des prêteurs.
-""",
-
-    "A.2.1": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-FAUX POSITIF — permis obtenu vs projet retardé (Aysha) :
-« The ESIA has received Environmental Clearance from MoWIE... However, the project has been delayed for a significant period »
-Les mots « permit », « delayed » et « mandatory » cohabitent. MAIS : l'autorisation A ÉTÉ OBTENUE, pas suspendue ni annulée. Le retard est celui du PROJET, pas du PERMIS. → NON
-
-FAUX POSITIF — écart normatif vs irrégularité administrative (CBG) :
-« gaps with the IFC Performance Standards were identified in the ESIA »
-Écart avec les standards des PRÊTEURS, pas suspension/annulation par l'AUTORITÉ qui a approuvé l'ESIA. → NON
-""",
-
-    "B.1.1": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-MITIGATION INTERROMPUE — statut 4 (Mundra) :
-Services de compensation fournis puis arrêtés en août 2017 → statut 4, gain = 0.
-
-FAUX POSITIF — engagement ≠ réparation (CBG) :
-« Formal written commitment by CBG not to disturb land before any LRP is in place »
-Engagement PROSPECTIF = n'atténue pas un risque DÉJÀ matérialisé → ne pas créditer.
-
-N/A ARGUMENTÉ — exemplaire (Indorama) :
-« the Project is not expected to result in physical or economic displacement and therefore IFC Performance Standard 5 is not triggered. Land required for the Project is located within the existing Indorama Free Zone »
-N/A avec verbatim positif, norme nommée, motif donné. C'est le modèle.
-
-CONSTAT DE DUE DILIGENCE (mode INSTRUCTION, Type 1) — cas CBG :
-Document : ESRS instruction pré-closing, mine de bauxite, Afrique.
-Passage : « CBG is committed to retroactively assess legacy involuntary resettlement and to identify outstanding grievances. 31 grievances have been received, of which 24 have been addressed. »
-→ OUI. L'ESRS documente des griefs non résolus (7 sur 31) et un engagement de réévaluation rétroactive — c'est un constat de due diligence (cf. R2, mode instruction), pas une vulnérabilité théorique. Le déplacement historique non compensé est un fait documenté, même s'il n'est pas daté sur la période de suivi.
-""",
-
-    "B.2.1": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-ASYMÉTRIE RISQUE/MITIGATION — exemple canonique (CBG, poussières/PM) :
-« The existing plant has historically generated significant quantities of fugitive dust... ALTHOUGH additional filters and scrubbers were installed on the dryer stack in recent years. »
-Filtres installés = mitigation authentique. Poussières persistantes = la mesure n'a pas produit son effet.
-→ OUI_DEFAILLANTE. EVIDENCE_MESURE = filtres. EVIDENCE_DEFAILLANCE = poussières.
-
-CONSTAT DE DUE DILIGENCE (mode INSTRUCTION, Type 1) — état initial dégradé (Indorama) :
-Document : ESRS instruction, mine de bauxite.
-Passage : « The affected airshed at both Kamsar and Sangarédi is already degraded, with some baseline ambient air quality data already exceeding WHO limits »
-→ OUI. En mode instruction (cf. R2), un airshed documenté comme dégradé AVANT le projet est un constat de due diligence à signaler : le projet s'ajoute à une situation déjà non conforme. Ce n'est pas "le projet a pollué" mais "le contexte est déjà dégradé et le projet va l'aggraver".
-
-FAUX POSITIF — dépassement état initial en mode SUIVI (Indorama) :
-« At night-time, measured LAeq exceeded the 45 dB IFC criterion at location N9 only »
-Dépassement mesuré dans le chapitre état initial, AVANT travaux, sur un document de type SUIVI (R2, mode suivi : seul un fait survenu pendant la période imputable au projet compte). Le projet n'en est pas la cause. → NON
-
-FAUX POSITIF — dépassement géogénique :
-« observed exceedances are likely attributable to natural background conditions typical of the regional geology »
-Origine naturelle, pas anthropique. → NON
-
-PIÈGE — déclaration client contredite (Mundra/R9) :
-Déclaration client « no exceedances » sans donnée jointe, contredite par l'auditeur → ni NON ni mitigation.
-""",
-
-    "B.3.1": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-REFUS DE PARTAGE DE DONNÉES — déclencheur (Mundra/R10) :
-« The client later informed CRP that it was not prepared to carry out additional monitoring or share monitoring data »
-Refus EXPLICITE du client de fournir des données de référence → déclencheur pour l'absence de données de référence, JAMAIS mitigation.
-Sujet : le CLIENT (pas le prêteur). Verbatim de substitution supérieur à l'original (R10).
-""",
+FEW_SHOTS = {
+    "A.1.1": {
+        "oui": {
+            "source": "Mundra (Type 3)",
+            "verbatim": "Des blocages physiques du canal d'amenée ont été menés par les "
+                        "pêcheurs de Tragadi bunder, arrêtant les transports sur le site.",
+            "brief": "Blocage physique par les pêcheurs, transport arrêté",
+        },
+        "non": {
+            "source": "Aysha (Type 1)",
+            "verbatim": "The project does not entail physical resettlement. Stakeholder "
+                        "engagement activities have been conducted since 2023.",
+            "brief": "Pas de mention de blocage, engagement communautaire en cours",
+        },
+    },
+    "A.1.2": {
+        "oui": None,
+        "non": {
+            "source": "Mundra (Type 3)",
+            "verbatim": "The legal proceedings in the D.C. District Court of Appeals "
+                        "concluded in 2021.",
+            "brief": "Litige contre IFC (prêteur), pas contre la SPV",
+        },
+    },
+    "A.2.1": {
+        "oui": None,
+        "non": {
+            "source": "CBG (Type 1)",
+            "verbatim": "L'ESIA a été approuvée par l'autorité guinéenne (BGÉÉE) en mai 2015 "
+                        "et le permis environnemental a été délivré en juin 2015.",
+            "brief": "Permis délivré, pas de suspension",
+        },
+    },
+    "A.2.2": {
+        "oui": {
+            "source": "Mundra (Type 3)",
+            "verbatim": "The client completed loan prepayments to IFC in 2018, ending the "
+                        "financial relationship.",
+            "brief": "IFC retirée en 2018, fait documenté = OUI",
+        },
+        "non": {
+            "source": "Aysha (Type 1)",
+            "verbatim": "IFC and AfDB are mandated lead arrangers.",
+            "brief": "Bailleurs en place, aucun retrait",
+        },
+    },
+    "A.3.1": {
+        "oui": None,
+        "non": {
+            "source": "CBG (Type 1)",
+            "verbatim": "The project has been in continuous operation since 1973.",
+            "brief": "Aucune injonction d'arrêt mentionnée",
+        },
+    },
+    "A.3.2": {
+        "oui": None,
+        "non": {
+            "source": "Mundra (Type 3)",
+            "verbatim": "Aucun accident structurel ou rupture d'ouvrage signalé.",
+            "brief": "Silence explicite sur les accidents",
+        },
+    },
+    "B.1.1": {
+        "oui": {
+            "source": "Aysha (Type 1)",
+            "verbatim": "Economic displacement affects 909 persons, seasonal residents, "
+                        "across 1,521 hectares. A Livelihood Restoration Plan is being finalized.",
+            "brief": "Déplacement éco documenté, LRP pas encore en place = sans compensation",
+        },
+        "non": {
+            "source": "Indorama (Type 1)",
+            "verbatim": "PS5 is not triggered. The project site is within the Indorama Free "
+                        "Zone with established land tenure.",
+            "brief": "PS5 non déclenchée, maîtrise foncière établie = NA_ARGUMENTE",
+        },
+    },
+    "B.1.2": {"oui": None, "non": None},  # cf. docstring module — sujet non couvert par les 4 dossiers
+    "B.2.1": {
+        "oui": {
+            "source": "Mundra (Type 3)",
+            "verbatim": "Repeated exceedances of PM10 standards were recorded at other site locations.",
+            "brief": "Dépassements PM10 récurrents, fait daté",
+        },
+        "non": {
+            "source": "Aysha (Type 1)",
+            "verbatim": "Le projet est un parc éolien sans émissions atmosphériques industrielles.",
+            "brief": "Pas de source de PM10, question non pertinente",
+        },
+    },
+    "B.2.2": {"oui": None, "non": None},  # cf. docstring module — sujet non couvert par les 4 dossiers
+    "B.3.1": {
+        "oui": {
+            "source": "Aysha (Type 1)",
+            "verbatim": "Le rapport décrit les zones de peuplement mais ne fournit aucune "
+                        "donnée chiffrée de référence socio-économique.",
+            "brief": "Pas de baseline chiffrée = absence = OUI",
+        },
+        "non": {
+            "source": "Indorama (Type 1)",
+            "verbatim": "Baseline environmental and social conditions documented across 12 parameters.",
+            "brief": "Baseline complète documentée",
+        },
+    },
+    "B.3.2": {
+        "oui": {
+            "source": "Mundra (Type 3)",
+            "verbatim": "The client later informed CRP that it was not prepared to carry out "
+                        "additional monitoring or share monitoring data.",
+            "brief": "Refus de suivi et de partage de données = absence de suivi RSE périodique",
+        },
+        "non": {
+            "source": "Mundra (Type 3)",
+            "verbatim": "Rapports de suivi transmis annuellement au prêteur.",
+            "brief": "Reporting annuel en place",
+        },
+    },
 }
 
 
-def get_prompt(question_code, context_chunks, document_type=1):
-    """Assemble le prompt V4 pour une question donnée.
+def _format_few_shot_extraction(code):
+    fs = FEW_SHOTS.get(code, {})
+    parts = []
+    if fs.get("oui"):
+        parts.append(
+            f"EXEMPLE OUI ({fs['oui']['source']}) :\n"
+            f'Passage : "{fs["oui"]["verbatim"]}"\n'
+            f"→ found=true. {fs['oui']['brief']}"
+        )
+    if fs.get("non"):
+        parts.append(
+            f"EXEMPLE NON ({fs['non']['source']}) :\n"
+            f'Passage : "{fs["non"]["verbatim"]}"\n'
+            f"→ found=false. {fs['non']['brief']}"
+        )
+    if not parts:
+        return ""
+    return "=== EXEMPLES DE RÉFÉRENCE ===\n\n" + "\n\n".join(parts)
 
-    CHOIX V4: le document_type conditionne :
-    - la règle de matérialisation (R2, CC-V4-11 : instruction vs suivi)
-    - les formes de preuve admises (R11)
-    - les règles temporelles (R8, Type 3 seulement)
-    - la hiérarchie des sources (R9, Types 2-3 seulement)
-    Il ne change JAMAIS R1 (biais), R7bis (ESAP) ni R10 (filtre de sujet)
-    — universels, valables sur les 4 types.
 
-    Retourne None si question_code est inconnu (pas d'exception — cf.
-    CC-V4-05 : l'appelant est censé valider le code en amont via
-    grid_questions.get_question()).
+def _format_few_shot_qualification(code):
+    # CHOIX: mêmes exemples que l'extraction (mêmes verbatims des 4
+    # dossiers), reformulés en décision status OUI/NON — pas un second jeu
+    # de données à maintenir séparément.
+    fs = FEW_SHOTS.get(code, {})
+    parts = []
+    if fs.get("oui"):
+        parts.append(
+            f"EXEMPLE OUI ({fs['oui']['source']}) :\n"
+            f'Verbatim : "{fs["oui"]["verbatim"]}"\n'
+            f"→ status=OUI. {fs['oui']['brief']}"
+        )
+    if fs.get("non"):
+        parts.append(
+            f"EXEMPLE NON ({fs['non']['source']}) :\n"
+            f'Verbatim : "{fs["non"]["verbatim"]}"\n'
+            f"→ status=NON (ou NA_ARGUMENTE si motif explicite). {fs['non']['brief']}"
+        )
+    if not parts:
+        return ""
+    return "=== EXEMPLES DE RÉFÉRENCE ===\n\n" + "\n\n".join(parts)
+
+
+def get_extraction_prompt(question_code, context_chunks, document_type=1):
+    """Assemble le prompt de Passe 1 (EXTRACTION) pour une question donnée.
+
+    CHOIX (CC-V4-12) : document_type conditionne la matérialisation (R2,
+    instruction/suivi) et les couches temporelles (R8, Type 3 seulement).
+    Ne demande AUCUN jugement R5 (silence, déterministe côté Python) ni R7
+    (mitigation, Passe 2 seulement).
+
+    Retourne None si question_code est inconnu (pas d'exception — même
+    contrat que l'architecture précédente).
     """
     question = grid_questions.get_question(question_code)
     if question is None:
         return None
 
     doc_info = grid_questions.DOCUMENT_TYPES.get(document_type, grid_questions.DOCUMENT_TYPES[1])
-
-    # R2 — matérialisation, conditionnelle au reading_mode (CC-V4-11) :
-    # cf. _MATERIALISATION_INSTRUCTION/_SUIVI, cause racine du sur-score
-    # CBG corrigée par ce BLOC B.
     materialisation_rule = (
         _MATERIALISATION_INSTRUCTION if doc_info["reading_mode"] == "instruction" else _MATERIALISATION_SUIVI
     )
-
-    # R5 — silence, dépend de silence_type (grid_questions.py, CC-08)
-    silence_rule = _SILENCE_ETAT if question.get("silence_type") == "etat" else _SILENCE_EVENEMENT
-
-    # R11 — formes de preuve admises selon le mode de lecture
-    proof_rule = _PROOF_FORMS_INSTRUCTION if doc_info["reading_mode"] == "instruction" else _PROOF_FORMS_SUIVI
-
-    # R8 — couches temporelles (Type 3 seulement)
     temporal = _TEMPORAL_RULE_TYPE3 if document_type == 3 else _TEMPORAL_RULE_OTHER
-
-    # R9 — hiérarchie des sources (Types 2-3 seulement)
-    hierarchy = _HIERARCHY_RULE_TYPE23 if document_type in (2, 3) else _HIERARCHY_RULE_OTHER
-
-    # Few-shot — cf. _FEW_SHOT_EXAMPLES, "" si aucun cas annoté pour ce code
-    few_shot = _FEW_SHOT_EXAMPLES.get(question_code, "")
-
-    # R2bis — articulation B.2.3/B.4.1 (correction V4) : CODE MORT DORMANT
-    # depuis CC-V4-11, cf. docstring de _ARTICULATION_B23_B41 — ces codes
-    # n'existent plus dans grid_questions.py, la condition ne matche donc
-    # plus jamais.
-    articulation = _ARTICULATION_B23_B41 if question_code in ("B.2.3", "B.4.1") else ""
-
     context = "\n---\n".join(context_chunks) if context_chunks else "(aucun passage fourni)"
 
-    if question.get("inverted_polarity"):
-        return _B31_PROMPT_TEMPLATE.format(
-            document_type_label=doc_info["label"],
-            reading_mode=doc_info["reading_mode"],
-            question_r=question["question_r"],
-            context_chunks=context,
-            silence_rule=silence_rule,
-            proof_forms_rule=proof_rule,
-            few_shot_section=few_shot,
-        )
-
-    return _STANDARD_PROMPT_TEMPLATE.format(
+    return _EXTRACTION_PROMPT.format(
+        code=question_code,
+        question_r=question["question_r"],
         document_type_label=doc_info["label"],
         reading_mode=doc_info["reading_mode"],
-        question_r=question["question_r"],
         context_chunks=context,
         materialisation_rule=materialisation_rule,
-        silence_rule=silence_rule,
-        proof_forms_rule=proof_rule,
-        articulation_rule=articulation,
         temporal_rule=temporal,
+        subject_rule=_SUBJECT_RULE,
+        few_shot_extraction=_format_few_shot_extraction(question_code),
+    )
+
+
+def get_qualification_prompt(question_code, verbatim, subject, document_type=1):
+    """Assemble le prompt de Passe 2 (QUALIFICATION) pour une question et un
+    verbatim déjà extraits en Passe 1.
+
+    verbatim : le passage extrait par la Passe 1 (found=true) — la
+    Passe 2 ne voit JAMAIS les passages bruts du document, uniquement ce
+    verbatim, cf. docstring module ("SUR le verbatim extrait en Passe 1").
+    subject : la valeur `subject` de la Passe 1, consommée telle quelle,
+    jamais réévaluée ici (cf. _SUBJECT_RULE).
+
+    Retourne None si question_code est inconnu.
+    """
+    question = grid_questions.get_question(question_code)
+    if question is None:
+        return None
+
+    doc_info = grid_questions.DOCUMENT_TYPES.get(document_type, grid_questions.DOCUMENT_TYPES[1])
+    proof_rule = _PROOF_FORMS_INSTRUCTION if doc_info["reading_mode"] == "instruction" else _PROOF_FORMS_SUIVI
+    hierarchy = _HIERARCHY_RULE_TYPE23 if document_type in (2, 3) else _HIERARCHY_RULE_OTHER
+
+    return _QUALIFICATION_PROMPT.format(
+        code=question_code,
+        question_r=question["question_r"],
+        question_a=question["question_a"],
+        reading_mode=doc_info["reading_mode"],
+        subject=subject or "AMBIGUOUS",
+        verbatim=verbatim or "",
         hierarchy_rule=hierarchy,
-        few_shot_section=few_shot,
+        proof_forms_rule=proof_rule,
+        few_shot_qualification=_format_few_shot_qualification(question_code),
     )
 
 
 # ============================================================================
-# Parsing de la réponse LLM
+# Parsing JSON (CC-V4-12)
 # ============================================================================
 
-# FRAGILE: regex ancrées en début de ligne (^, re.MULTILINE) plutôt qu'un
-# split naïf — tolère des lignes vides ou dans un ordre légèrement
-# différent, cohérent avec la tolérance déjà appliquée dans
-# deep_analysis._parse_pass1_response face à un modèle 4B.
-# FRAGILE (bug corrigé, CC-V4-06) : le "\s*" après les deux-points est
-# volontairement remplacé par "[ \t]*" (espaces/tabs, PAS \n) — "\s"
-# inclut le saut de ligne, donc "\s*" après ":" pour un champ VIDE
-# ("EVIDENCE_R:\n") avalait le \n et le "(.*)$" capturait alors toute la
-# ligne SUIVANTE au lieu d'une chaîne vide. Repéré via grid_analyze.py :
-# evidence_r/evidence_a se retrouvaient peuplés du contenu du champ
-# suivant sur toute réponse LLM où un champ optionnel était vide.
-_LINE_PATTERNS = {
-    "status":               re.compile(r"^STATUS\s*:[ \t]*(OUI|NON|INCONNU)\b", re.IGNORECASE | re.MULTILINE),
-    "evidence_r":           re.compile(r"^EVIDENCE_R\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
-    "page":                 re.compile(r"^PAGE\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
-    "mitigation_status":    re.compile(r"^MITIGATION_STATUS\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
-    "evidence_mesure":      re.compile(r"^EVIDENCE_MESURE\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
-    "evidence_defaillance": re.compile(r"^EVIDENCE_DEFAILLANCE\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
-    "subject_filter":       re.compile(r"^SUJET\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
-    "confidence_note":      re.compile(r"^CONFIDENCE\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE),
-}
-
-_VALID_SUBJECT_FILTERS = ("SPV", "PRÊTEUR", "SUBSTITUTION", "AMBIGU", "INDIRECT")
+# FRAGILE: le LLM peut wrapper le JSON dans ```json...``` ou ajouter du
+# texte avant/après malgré la consigne "sans backticks, sans texte" —
+# tolérant sur le format, strict sur les clés (cf. directive, section E).
+_BACKTICK_FENCE_RE = re.compile(r"```(?:json)?\s*|```\s*", re.IGNORECASE)
 
 
-def parse_response(raw_response):
-    """Parse la réponse LLM V4 ligne par ligne.
-    CHOIX: regex simple, pas de JSON parsing — cohérent avec deep_analysis.py.
-    FRAGILE: le modèle 4B ne suit pas toujours le format parfaitement.
+def _parse_llm_json(raw_text, expected_keys=None):
+    """Parse un JSON retourné par le LLM, avec nettoyage tolérant.
 
-    Champs attendus : STATUS, EVIDENCE_R, PAGE, MITIGATION_STATUS,
-    EVIDENCE_MESURE, EVIDENCE_DEFAILLANCE, SUJET (R10), CONFIDENCE.
-
-    Retourne un dict {status, evidence_r, page, mitigation_status,
-    evidence_mesure, evidence_defaillance, subject_filter, confidence_note}
-    ou None si le parsing échoue (pas de ligne STATUS exploitable).
-
-    R10 : subject_filter n'est PAS un filtre appliqué ici en post-traitement
-    — c'est le LLM qui évalue le sujet dans le prompt (cf. get_prompt).
-    Cette fonction se contente de lire ce que le LLM a répondu, avec un
-    repli sûr sur "SPV" si le champ est absent ou invalide (fail-open,
-    cohérent ADR-002 : ne jamais bloquer sur un champ mal formé).
+    Retourne un dict (avec `expected_keys` manquantes complétées à None),
+    ou None si aucun JSON exploitable n'a pu être extrait.
     """
-    if not raw_response:
+    if not raw_text:
         return None
 
-    status_match = _LINE_PATTERNS["status"].search(raw_response)
-    if not status_match:
-        logger.warning("grid_prompts: aucune ligne STATUS exploitable — parsing échoué.")
+    cleaned = _BACKTICK_FENCE_RE.sub("", raw_text).strip()
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None
+    cleaned = cleaned[start:end + 1]
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("grid_prompts: JSON invalide après nettoyage — parsing échoué.")
         return None
 
-    def _field(key):
-        m = _LINE_PATTERNS[key].search(raw_response)
-        return m.group(1).strip() if m else ""
+    if not isinstance(parsed, dict):
+        return None
 
-    mitigation_status = _field("mitigation_status").upper()
-    if mitigation_status in ("", "N/A") or mitigation_status not in grid_questions.MITIGATION_STATUTS:
-        mitigation_status = None
+    if expected_keys:
+        for key in expected_keys:
+            parsed.setdefault(key, None)
 
-    page = _field("page") or "inconnue"
+    return parsed
 
-    subject_filter = _field("subject_filter") or "SPV"
-    if subject_filter not in _VALID_SUBJECT_FILTERS:
-        subject_filter = "SPV"  # repli sûr, cf. docstring
+
+_EXTRACTION_KEYS = ("code", "found", "verbatim", "page", "subject", "brief")
+_QUALIFICATION_KEYS = (
+    "code", "status", "confidence", "mitigation_status",
+    "verbatim_r", "verbatim_a_mesure", "verbatim_a_defaillance", "brief_r", "brief_a",
+)
+
+_VALID_QUALIFICATION_STATUSES = ("OUI", "NON", "NA_ARGUMENTE")
+
+
+def parse_extraction_response(raw_response):
+    """Parse la réponse JSON de la Passe 1 (EXTRACTION).
+
+    Retourne un dict {found: bool, verbatim: str|None, page: str|None,
+    subject: str|None, brief: str|None}, ou None si le JSON est
+    inexploitable (found manquant/non-booléen).
+    """
+    parsed = _parse_llm_json(raw_response, expected_keys=_EXTRACTION_KEYS)
+    if parsed is None:
+        return None
+
+    found = parsed.get("found")
+    if not isinstance(found, bool):
+        # Tolérance : certains modèles renvoient "true"/"false" en string.
+        if isinstance(found, str) and found.strip().lower() in ("true", "false"):
+            found = found.strip().lower() == "true"
+        else:
+            logger.warning("grid_prompts: champ 'found' absent ou invalide — parsing échoué.")
+            return None
+
+    subject = parsed.get("subject")
+    # R10 : repli sûr sur AMBIGUOUS, JAMAIS SPV (cf. docstring module —
+    # correction volontaire par rapport à l'ancien repli SPV de
+    # l'architecture précédente, contraire au principe R10 lui-même).
+    if subject not in _VALID_SUBJECTS:
+        subject = "AMBIGUOUS" if found else None
 
     return {
-        "status": status_match.group(1).strip().upper(),
-        "evidence_r": _field("evidence_r"),
-        "page": page,
+        "found": found,
+        "verbatim": (parsed.get("verbatim") or "").strip() or None,
+        "page": parsed.get("page"),
+        "subject": subject,
+        "brief": (parsed.get("brief") or "").strip() or None,
+    }
+
+
+def parse_qualification_response(raw_response):
+    """Parse la réponse JSON de la Passe 2 (QUALIFICATION).
+
+    Retourne un dict {status, confidence, mitigation_status, verbatim_r,
+    verbatim_a_mesure, verbatim_a_defaillance, brief_r, brief_a}, ou None
+    si le JSON est inexploitable (status manquant/invalide).
+    """
+    parsed = _parse_llm_json(raw_response, expected_keys=_QUALIFICATION_KEYS)
+    if parsed is None:
+        return None
+
+    status = (parsed.get("status") or "").strip().upper()
+    if status not in _VALID_QUALIFICATION_STATUSES:
+        logger.warning("grid_prompts: champ 'status' absent ou invalide (%r) — parsing échoué.", status)
+        return None
+
+    mitigation_status = (parsed.get("mitigation_status") or "").strip().upper() or None
+    if mitigation_status not in grid_questions.MITIGATION_STATUTS:
+        mitigation_status = None
+
+    confidence = (parsed.get("confidence") or "").strip().upper()
+    if confidence not in ("HIGH", "LOW"):
+        confidence = "LOW"  # repli prudent : un champ mal formé ne doit pas se faire passer pour HIGH
+
+    return {
+        "status": status,
+        "confidence": confidence,
         "mitigation_status": mitigation_status,
-        "evidence_mesure": _field("evidence_mesure"),
-        "evidence_defaillance": _field("evidence_defaillance"),
-        "subject_filter": subject_filter,
-        "confidence_note": _field("confidence_note") or None,
+        "verbatim_r": (parsed.get("verbatim_r") or "").strip() or None,
+        "verbatim_a_mesure": (parsed.get("verbatim_a_mesure") or "").strip() or None,
+        "verbatim_a_defaillance": (parsed.get("verbatim_a_defaillance") or "").strip() or None,
+        "brief_r": (parsed.get("brief_r") or "").strip() or None,
+        "brief_a": (parsed.get("brief_a") or "").strip() or None,
     }

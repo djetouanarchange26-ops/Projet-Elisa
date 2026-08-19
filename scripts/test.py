@@ -137,7 +137,7 @@ def test_unit():
     config.LLM_BACKEND, config.LLM_FALLBACK = "together", "ollama"
     calls = []
 
-    def _fail_then_succeed(backend, prompt, model, options, timeout):
+    def _fail_then_succeed(backend, prompt, model, options, timeout, response_format=None):
         calls.append(backend)
         if backend == "together":
             raise RuntimeError("primaire simulé injoignable")
@@ -248,74 +248,81 @@ def test_unit():
 
 
 def test_grid_prompts_r10_extended():
-    """Tests dédiés à l'extension R10 (grid_prompts.py) : 2 nouvelles
-    catégories de sujet (AMBIGU, INDIRECT) en plus de SPV/PRÊTEUR/
-    SUBSTITUTION, avec consigne explicite de ne jamais attribuer par
-    défaut un manquement ambigu à la SPV. String-only, aucun appel LLM."""
-    print("\n--- 1.19 R10 — filtre de sujet étendu (grid_prompts.py) ---\n")
+    """CC-V4-12 : R10 (filtre de sujet) vit désormais dans la Passe 1
+    (EXTRACTION, champ `subject`), plus dans un appel unique — 5
+    catégories SPV/LENDER/SUBSTITUTION/AMBIGUOUS/INDIRECT (extension
+    volontaire par rapport au schéma à 3 valeurs de la directive CC-V4-12,
+    cf. docstring grid_prompts.py). String-only, aucun appel LLM."""
+    print("\n--- 1.19 R10 — filtre de sujet étendu (grid_prompts.py, CC-V4-12) ---\n")
 
     import grid_prompts
 
-    prompt_a21 = grid_prompts.get_prompt("A.2.1", ["chunk"])
-    _test("R10 : catégorie AMBIGU documentée dans le prompt", "AMBIGU" in prompt_a21)
-    _test("R10 : catégorie INDIRECT documentée dans le prompt", "INDIRECT" in prompt_a21)
-    _test("R10 : consigne explicite de ne pas attribuer un sujet ambigu à la SPV",
-          "NE PAS" in prompt_a21 and "attribuer" in prompt_a21.lower())
-    _test("R10 : le biais R1 ne s'applique jamais à l'attribution du sujet",
-          "jamais" in prompt_a21.lower() and "sujet" in prompt_a21.lower())
+    prompt_a21 = grid_prompts.get_extraction_prompt("A.2.1", ["chunk"])
+    _test("R10 : catégorie SUBSTITUTION documentée dans le prompt d'extraction", "SUBSTITUTION" in prompt_a21)
+    _test("R10 : catégorie AMBIGUOUS documentée dans le prompt d'extraction", "AMBIGUOUS" in prompt_a21)
+    _test("R10 : catégorie INDIRECT documentée dans le prompt d'extraction", "INDIRECT" in prompt_a21)
+    _test("R10 : consigne explicite de ne pas attribuer par défaut à la SPV",
+          "JAMAIS" in prompt_a21 and "SPV" in prompt_a21 and "par défaut" in prompt_a21)
 
-    # Parsing : les 2 nouvelles catégories sont acceptées telles quelles,
-    # sans réécriture (fail-open, cohérent avec SPV/PRÊTEUR/SUBSTITUTION).
-    resp_ambigu = "STATUS: NON\nEVIDENCE_R:\nPAGE: inconnue\nMITIGATION_STATUS: N/A\nSUJET: AMBIGU\n"
-    parsed_ambigu = grid_prompts.parse_response(resp_ambigu)
-    _test("Parsing V4 : subject_filter='AMBIGU' accepté", parsed_ambigu["subject_filter"] == "AMBIGU",
-          f"Obtenu : {parsed_ambigu['subject_filter']!r}")
+    # Parsing (Passe 1) : les 5 catégories sont acceptées telles quelles,
+    # sans réécriture — sauf repli AMBIGUOUS si absente/invalide (jamais
+    # SPV par défaut, cf. parse_extraction_response).
+    import json
+    resp_ambiguous = json.dumps({"code": "A.2.1", "found": True, "verbatim": "x", "page": 5, "subject": "AMBIGUOUS", "brief": "test"})
+    parsed_ambiguous = grid_prompts.parse_extraction_response(resp_ambiguous)
+    _test("Parsing extraction : subject='AMBIGUOUS' accepté", parsed_ambiguous["subject"] == "AMBIGUOUS",
+          f"Obtenu : {parsed_ambiguous['subject']!r}")
 
-    resp_indirect = "STATUS: NON\nEVIDENCE_R:\nPAGE: inconnue\nMITIGATION_STATUS: N/A\nSUJET: INDIRECT\n"
-    parsed_indirect = grid_prompts.parse_response(resp_indirect)
-    _test("Parsing V4 : subject_filter='INDIRECT' accepté", parsed_indirect["subject_filter"] == "INDIRECT",
-          f"Obtenu : {parsed_indirect['subject_filter']!r}")
+    resp_indirect = json.dumps({"code": "A.2.1", "found": True, "verbatim": "x", "page": 5, "subject": "INDIRECT", "brief": "test"})
+    parsed_indirect = grid_prompts.parse_extraction_response(resp_indirect)
+    _test("Parsing extraction : subject='INDIRECT' accepté", parsed_indirect["subject"] == "INDIRECT",
+          f"Obtenu : {parsed_indirect['subject']!r}")
+
+    resp_bad_subject = json.dumps({"code": "A.2.1", "found": True, "verbatim": "x", "page": 5, "subject": "AUTRE", "brief": "test"})
+    parsed_bad = grid_prompts.parse_extraction_response(resp_bad_subject)
+    _test("Parsing extraction : subject invalide -> repli AMBIGUOUS (JAMAIS SPV, cf. R10)",
+          parsed_bad["subject"] == "AMBIGUOUS", f"Obtenu : {parsed_bad['subject']!r}")
 
 
 def test_grid_prompts_b23_b41_articulation():
     """CC-V4-11 : B.2.3/B.4.1 n'existent plus dans grid_questions.py
-    (absents de la Maquette Vierge, cf. BLOC A) — R2bis
-    (_ARTICULATION_B23_B41) est donc devenue CODE MORT DORMANT : elle ne
-    doit plus jamais être injectée dans aucun prompt. String-only, aucun
-    appel LLM."""
-    print("\n--- 1.20 Articulation B.2.3/B.4.1 — CODE MORT DORMANT (grid_prompts.py, CC-V4-11) ---\n")
+    (absents de la Maquette Vierge). CC-V4-12 : grid_prompts.py réécrit en
+    entier (architecture 2 passes) — R2bis (_ARTICULATION_B23_B41) n'a
+    même plus été reportée dans la réécriture (elle ne servait qu'à
+    articuler B.2.3/B.4.1, tous deux inexistants ; texte original
+    récupérable dans l'historique git, commit 3fbf8b5, si un besoin
+    similaire réapparaissait). Ce test vérifie seulement que les codes
+    retirés renvoient None des deux passes. String-only, aucun appel LLM."""
+    print("\n--- 1.20 Codes retirés B.2.3/B.4.1 (grid_prompts.py, CC-V4-11/12) ---\n")
 
     import grid_prompts
-    import grid_questions
 
-    _test("B.2.3 retiré : get_prompt('B.2.3', ...) -> None",
-          grid_prompts.get_prompt("B.2.3", ["chunk"]) is None)
-    _test("B.4.1 retiré : get_prompt('B.4.1', ...) -> None",
-          grid_prompts.get_prompt("B.4.1", ["chunk"]) is None)
-
-    for q in grid_questions.QUESTIONS:
-        prompt = grid_prompts.get_prompt(q["code"], ["chunk"])
-        _test(f"R2bis absente du prompt {q['code']} (dormante, CC-V4-11)", "R2bis" not in prompt)
+    for code in ("B.2.3", "B.4.1"):
+        _test(f"{code} retiré : get_extraction_prompt('{code}', ...) -> None",
+              grid_prompts.get_extraction_prompt(code, ["chunk"]) is None)
+        _test(f"{code} retiré : get_qualification_prompt('{code}', ...) -> None",
+              grid_prompts.get_qualification_prompt(code, "verbatim", "SPV") is None)
 
 
 def test_grid_prompts_r7_evidence_linkage():
     """Tests dédiés au renforcement R7 (grid_prompts.py) : le verbatim de
-    défaillance (EVIDENCE_DEFAILLANCE, statut 4) doit porter explicitement
-    sur la MÊME mesure que le verbatim de mesure (EVIDENCE_MESURE) — une
-    simple conjonction concessive (however/although) isolée, ou une
-    défaillance d'une AUTRE mesure, ne suffit plus : le LLM doit rester au
-    statut 3 en cas de doute sur le lien. String-only, aucun appel LLM
+    défaillance (statut 4, OUI_DEFAILLANTE) doit porter explicitement sur
+    la MÊME mesure que le verbatim de mesure — une simple conjonction
+    concessive (however/although) isolée, ou une défaillance d'une AUTRE
+    mesure, ne suffit plus : rester au statut 3 en cas de doute sur le
+    lien. CC-V4-12 : cette règle vit désormais dans la Passe 2
+    (QUALIFICATION), pas dans l'appel unique. String-only, aucun appel LLM
     (le garde-fou structurel — double verbatim non vide — existe déjà côté
     grid_scoring.py et n'est pas modifié ici)."""
-    print("\n--- 1.21 R7 — lien mesure/défaillance (grid_prompts.py) ---\n")
+    print("\n--- 1.21 R7 — lien mesure/défaillance (grid_prompts.py, CC-V4-12) ---\n")
 
     import grid_prompts
 
-    prompt_b11 = grid_prompts.get_prompt("B.1.1", ["chunk"])
+    prompt_b11 = grid_prompts.get_qualification_prompt("B.1.1", "verbatim de test", "SPV")
     _test("R7 : exige que la défaillance porte sur la MÊME mesure",
           "MÊME" in prompt_b11 and "mesure" in prompt_b11.lower())
     _test("R7 : cas 'lien non explicite -> rester au statut 3' documenté",
-          "statut 3" in prompt_b11 and "statut 4" in prompt_b11)
+          "OUI_PROUVEE" in prompt_b11 and "OUI_DEFAILLANTE" in prompt_b11)
 
 
 def test_pipeline_dispatch_single_execution():
@@ -408,7 +415,7 @@ def test_grid_doctype():
     _orig_dispatch = llm_backend._dispatch
 
     def _make_fake_dispatch(doc_type, confidence="haute"):
-        def _fake(backend, prompt, model, options, timeout):
+        def _fake(backend, prompt, model, options, timeout, response_format=None):
             return f"TYPE: {doc_type}\nCONFIANCE: {confidence}\nEVIDENCE: extrait de justification\n"
         return _fake
 
@@ -425,7 +432,7 @@ def test_grid_doctype():
 
         # --- Fail-open : LLM injoignable -> repli heuristique lexical,
         # jamais un Type 1 muet indiscernable d'une vraie détection ---
-        def _broken_dispatch(backend, prompt, model, options, timeout):
+        def _broken_dispatch(backend, prompt, model, options, timeout, response_format=None):
             raise RuntimeError("backend injoignable (simulation)")
         llm_backend._dispatch = _broken_dispatch
 
@@ -449,7 +456,7 @@ def test_grid_doctype():
               result_no_hint["source"] == "fallback_heuristique_aucun_indice")
 
         # --- Réponse LLM inexploitable (pas de ligne TYPE) -> repli heuristique ---
-        def _garbage_dispatch(backend, prompt, model, options, timeout):
+        def _garbage_dispatch(backend, prompt, model, options, timeout, response_format=None):
             return "réponse illisible sans le bon format"
         llm_backend._dispatch = _garbage_dispatch
         result_garbage = grid_doctype.detect_document_type("Annual Monitoring Report prepared by the client.")
@@ -463,173 +470,217 @@ def test_grid_doctype():
 
 
 def test_grid_prompts_v4():
-    """Tests des prompts V4 (grid_prompts.py, directive CC-V4-05) : règles
-    R1-R11 dynamiques selon document_type, few-shot des 4 dossiers annotés,
-    parsing avec le champ SUJET (R10)."""
-    print("\n--- 1.9 Prompts Grille V4 (grid_prompts.py) ---\n")
+    """Tests des prompts, architecture 2 passes + JSON (grid_prompts.py,
+    directive CC-V4-12) : Passe 1 EXTRACTION, Passe 2 QUALIFICATION,
+    règles réorganisées (R2/R8 en extraction ; R9/R11 en qualification ;
+    R10 en extraction), few-shot des 4 dossiers annotés, parsing JSON
+    tolérant (backticks, clés manquantes)."""
+    print("\n--- 1.9 Prompts Grille V4 — 2 passes (grid_prompts.py, CC-V4-12) ---\n")
+
+    import json as json_module
 
     import grid_prompts
     import grid_questions
 
-    # 1. get_prompt("A.1.1", [...]) retourne un string non vide
-    prompt_a11 = grid_prompts.get_prompt("A.1.1", ["chunk1", "chunk2"])
-    _test("Test 1 : get_prompt('A.1.1', ...) -> string non vide",
+    # 1. get_extraction_prompt("A.1.1", [...]) retourne un string non vide
+    prompt_a11 = grid_prompts.get_extraction_prompt("A.1.1", ["chunk1", "chunk2"])
+    _test("Test 1 : get_extraction_prompt('A.1.1', ...) -> string non vide",
           isinstance(prompt_a11, str) and len(prompt_a11) > 0)
 
-    # 2. Le prompt contient la formulation R exacte d'A.1.1
+    # 2. Le prompt d'extraction contient la formulation R exacte d'A.1.1
     question_r_a11 = grid_questions.get_question("A.1.1")["question_r"]
-    _test("Test 2 : formulation R exacte d'A.1.1 présente dans le prompt",
+    _test("Test 2 : formulation R exacte d'A.1.1 présente dans le prompt d'extraction",
           question_r_a11 in prompt_a11, f"Attendu dans le prompt : {question_r_a11!r}")
 
-    # 3. Le prompt contient "français" (instruction de langue)
-    _test("Test 3 : instruction de langue ('français') présente", "français" in prompt_a11)
+    # 3. Instruction de langue (F2, CLAUDE.md — invariant non régressé par CC-V4-12)
+    _test("Test 3 : instruction de langue ('français') présente en extraction",
+          "français" in prompt_a11)
+    prompt_qual_lang = grid_prompts.get_qualification_prompt("A.1.1", "verbatim test", "SPV")
+    _test("Test 3b : instruction de langue ('français') présente en qualification",
+          "français" in prompt_qual_lang)
+    _test("Test 3c : consigne 'verbatim reste dans sa langue d'origine' (pas de traduction forcée)",
+          "verbatim" in prompt_a11.lower() and "traduction" in prompt_a11.lower())
 
-    # 4. Le prompt contient "ambiguïté" (R1, biais faux positifs — CC-04, non régressé)
-    _test("Test 4 : instruction biais faux positifs ('ambiguïté') présente", "ambiguïté" in prompt_a11)
+    # 4. B.3.1 (CC-V4-11) : polarité STANDARD — question_a présente dans le
+    # prompt de qualification comme les 11 autres, plus de template dédié.
+    prompt_b31_qual = grid_prompts.get_qualification_prompt("B.3.1", "verbatim test", "SPV")
+    _test("Test 4 : prompt de qualification B.3.1 mentionne la question de mitigation",
+          grid_questions.get_question("B.3.1")["question_a"] in prompt_b31_qual)
 
-    # 5. B.3.1 (CC-V4-11) : polarité STANDARD depuis la restauration Maquette
-    # Vierge (cf. grid_questions.py) — utilise désormais le template
-    # standard comme les 11 autres questions, PLUS de polarité inversée.
-    prompt_b31 = grid_prompts.get_prompt("B.3.1", ["chunk1"])
-    _test("Test 5 : prompt B.3.1 contient 'QUESTION DE RISQUE' (polarité standard, CC-V4-11)",
-          "QUESTION DE RISQUE" in prompt_b31)
-    _test("Test 5b : prompt B.3.1 ne contient PAS 'POLARITÉ INVERSÉE' (CC-V4-11)",
-          "POLARITÉ INVERSÉE" not in prompt_b31)
-    _test("Test 5c : prompt B.3.1 mentionne la sous-question de mitigation",
-          "mitigation" in prompt_b31.lower())
-
-    # 5d. Aucune question de la Maquette Vierge n'active plus le template
-    # inversé (CC-V4-11, _B31_PROMPT_TEMPLATE devenu CODE MORT DORMANT).
+    # 4b. Aucune question de la Maquette Vierge n'est plus en polarité
+    # inversée (CC-V4-11, inchangé par CC-V4-12).
     for q in grid_questions.QUESTIONS:
-        _test(f"Test 5d : {q['code']} n'a pas inverted_polarity=True (CC-V4-11)",
+        _test(f"Test 4b : {q['code']} n'a pas inverted_polarity=True (CC-V4-11)",
               not q.get("inverted_polarity"))
 
-    # --- R2 — matérialisation conditionnelle au reading_mode (CC-V4-11, BLOC B) ---
-    prompt_instruction = grid_prompts.get_prompt("A.1.1", ["chunk"], document_type=1)
-    prompt_suivi = grid_prompts.get_prompt("A.1.1", ["chunk"], document_type=3)
-    _test("R2 : mode INSTRUCTION mentionne 'CONSTAT DOCUMENTÉ'",
-          "CONSTAT DOCUMENTÉ" in prompt_instruction)
-    _test("R2 : mode INSTRUCTION accepte un 'legacy issue'", "legacy issue" in prompt_instruction)
-    _test("R2 : mode SUIVI garde la règle stricte ('FAIT DATÉ, SURVENU')",
-          "FAIT DATÉ, SURVENU" in prompt_suivi)
-    _test("R2 : mode SUIVI n'accepte PAS 'CONSTAT DOCUMENTÉ' (règle instruction absente)",
-          "CONSTAT DOCUMENTÉ" not in prompt_suivi)
+    # --- R2 — matérialisation conditionnelle au reading_mode, en Passe 1 (CC-V4-12) ---
+    prompt_instruction = grid_prompts.get_extraction_prompt("A.1.1", ["chunk"], document_type=1)
+    prompt_suivi = grid_prompts.get_extraction_prompt("A.1.1", ["chunk"], document_type=3)
+    _test("R2 : mode INSTRUCTION mentionne un 'legacy issue' (constat, pas événement daté)",
+          "legacy issue" in prompt_instruction)
+    _test("R2 : mode SUIVI ne mentionne PAS 'legacy issue' (règle instruction absente)",
+          "legacy issue" not in prompt_suivi)
 
-    # 6. get_prompt("Z.9.9", [...]) -> None (code inconnu, pas d'exception)
-    _test("Test 6 : get_prompt code inconnu -> None", grid_prompts.get_prompt("Z.9.9", ["c"]) is None)
+    # 5. get_extraction_prompt/get_qualification_prompt("Z.9.9", ...) -> None (code inconnu)
+    _test("Test 5 : get_extraction_prompt code inconnu -> None",
+          grid_prompts.get_extraction_prompt("Z.9.9", ["c"]) is None)
+    _test("Test 5b : get_qualification_prompt code inconnu -> None",
+          grid_prompts.get_qualification_prompt("Z.9.9", "v", "SPV") is None)
 
-    # --- R11 : formes de preuve selon le type de document ---
-    prompt_type1 = grid_prompts.get_prompt("B.1.1", ["chunk"], document_type=1)
+    # --- R11 : formes de preuve selon le type de document — Passe 2 (CC-V4-12) ---
+    prompt_qual_type1 = grid_prompts.get_qualification_prompt("B.1.1", "verbatim", "SPV", document_type=1)
     _test("R11 : document Type 1 -> 4ème forme de preuve mentionnée",
-          "QUATRIÈME" in prompt_type1 or "plan détaillé" in prompt_type1)
+          "QUATRIÈME" in prompt_qual_type1 or "plan détaillé" in prompt_qual_type1)
 
-    prompt_type3 = grid_prompts.get_prompt("B.1.1", ["chunk"], document_type=3)
+    prompt_qual_type3 = grid_prompts.get_qualification_prompt("B.1.1", "verbatim", "SPV", document_type=3)
     _test("R11 : document Type 3 -> seulement 3 formes ('plan seul reste au statut 2')",
-          "plan seul reste au statut 2" in prompt_type3)
+          "plan seul reste au statut 2" in prompt_qual_type3)
 
-    # --- R8 : couches temporelles sur Type 3 seulement ---
-    _test("R8 : 'Couche 1' présent sur Type 3", "Couche 1" in prompt_type3)
-    _test("R8 : 'Couche 2' présent sur Type 3", "Couche 2" in prompt_type3)
+    # --- R8 : couches temporelles sur Type 3 seulement — Passe 1 (CC-V4-12) ---
+    prompt_ext_type1 = grid_prompts.get_extraction_prompt("A.1.1", ["chunk"], document_type=1)
+    prompt_ext_type3 = grid_prompts.get_extraction_prompt("A.1.1", ["chunk"], document_type=3)
+    _test("R8 : 'Couche 1' présent sur Type 3 (extraction)", "Couche 1" in prompt_ext_type3)
+    _test("R8 : 'Couche 2' présent sur Type 3 (extraction)", "Couche 2" in prompt_ext_type3)
     _test("R8 : 'Couche 1' ABSENT sur Type 1 (règle non universelle)",
-          "Couche 1" not in prompt_type1)
+          "Couche 1" not in prompt_ext_type1)
 
-    # --- R9 : hiérarchie des sources sur Types 2-3 seulement ---
-    _test("R9 : 'auditeur indépendant' présent sur Type 3", "auditeur indépendant" in prompt_type3)
-    _test("R9 : hiérarchie des sources ABSENTE sur Type 1",
-          "HIÉRARCHIE DES SOURCES" not in prompt_type1)
+    # --- R9 : hiérarchie des sources sur Types 2-3 seulement — Passe 2 (CC-V4-12) ---
+    _test("R9 : 'auditeur indépendant' présent sur Type 3 (qualification)",
+          "auditeur indépendant" in prompt_qual_type3)
+    _test("R9 : hiérarchie des sources ABSENTE sur Type 1 (qualification)",
+          "HIÉRARCHIE DES SOURCES" not in prompt_qual_type1)
 
-    # --- R10 : filtre de sujet, universel (présent quel que soit le type) ---
-    _test("R10 : 'institution financière' présent (Type 1 aussi)", "institution financière" in prompt_type1)
-    _test("R10 : 'substitution' mentionné", "substitution" in prompt_type1.lower())
+    # --- R10 : filtre de sujet, en Passe 1, universel (CC-V4-12) ---
+    _test("R10 : 5 catégories mentionnées dans le prompt d'extraction",
+          all(cat in prompt_a11 for cat in ("SPV", "LENDER", "SUBSTITUTION", "AMBIGUOUS", "INDIRECT")))
 
-    # --- Few-shot des 4 dossiers annotés (reconstruit CC-V4-11, cf.
-    # grid_prompts._FEW_SHOT_EXAMPLES pour le détail du remappage code par
-    # code) ---
-    prompt_b21 = grid_prompts.get_prompt("B.2.1", ["chunk"])
-    _test("Few-shot B.2.1 : cas CBG ('fugitive dust', déplacé depuis l'ancien B.2.2)",
-          "fugitive dust" in prompt_b21)
-    _test("Few-shot B.2.1 : cas Indorama airshed/WHO limits (BLOC B, nouveau)",
-          "WHO limits" in prompt_b21 or "airshed" in prompt_b21)
+    # --- Few-shot des 4 dossiers annotés (reconstruit CC-V4-12, cf.
+    # grid_prompts.FEW_SHOTS pour le détail) ---
+    prompt_b21 = grid_prompts.get_extraction_prompt("B.2.1", ["chunk"])
+    _test("Few-shot B.2.1 : cas Mundra ('PM10')", "PM10" in prompt_b21)
 
-    prompt_a12 = grid_prompts.get_prompt("A.1.2", ["chunk"])
-    _test("Few-shot A.1.2 : cas Mundra R10 ('Jam'/'SFI', déplacé depuis l'ancien A.2.1)",
-          "Jam" in prompt_a12 or "SFI" in prompt_a12)
+    prompt_a22 = grid_prompts.get_extraction_prompt("A.2.2", ["chunk"])
+    _test("Few-shot A.2.2 : cas Mundra (retrait IFC 2018)", "IFC" in prompt_a22 and "2018" in prompt_a22)
 
-    prompt_a21 = grid_prompts.get_prompt("A.2.1", ["chunk"])
-    _test("Few-shot A.2.1 : cas Aysha (permis obtenu vs projet retardé, déplacé depuis l'ancien A.3.1)",
-          "MoWIE" in prompt_a21 or "Environmental Clearance" in prompt_a21)
+    prompt_b11_ext = grid_prompts.get_extraction_prompt("B.1.1", ["chunk"])
+    _test("Few-shot B.1.1 : cas Indorama (N/A argumenté)", "Indorama Free Zone" in prompt_b11_ext)
+    _test("Few-shot B.1.1 : cas Aysha (déplacement économique)", "909 persons" in prompt_b11_ext)
 
-    prompt_b11 = grid_prompts.get_prompt("B.1.1", ["chunk"])
-    _test("Few-shot B.1.1 : cas Indorama (N/A argumenté)", "Indorama Free Zone" in prompt_b11)
-    _test("Few-shot B.1.1 : cas CBG legacy grievances (BLOC B, nouveau)",
-          "31 grievances" in prompt_b11 or "retroactively assess" in prompt_b11)
+    prompt_b31_ext = grid_prompts.get_extraction_prompt("B.3.1", ["chunk"])
+    _test("Few-shot B.3.1 : baseline chiffrée (Aysha/Indorama)",
+          "baseline" in prompt_b31_ext.lower())
 
-    prompt_b31 = grid_prompts.get_prompt("B.3.1", ["chunk"])
-    _test("Few-shot B.3.1 : refus de partage de données Mundra (déplacé depuis l'ancien B.3.1 biodiversité)",
-          "share monitoring data" in prompt_b31)
+    prompt_b32_ext = grid_prompts.get_extraction_prompt("B.3.2", ["chunk"])
+    _test("Few-shot B.3.2 : refus de partage de données Mundra",
+          "share monitoring data" in prompt_b32_ext)
 
-    # Questions sans cas annoté -> pas de few-shot inventé (fallback "")
-    for code in ("A.2.2", "A.3.1", "A.3.2", "B.1.2", "B.2.2", "B.3.2"):
-        _test(f"Pas de few-shot pour {code} (aucun cas annoté, CC-V4-11)",
-              code not in grid_prompts._FEW_SHOT_EXAMPLES)
+    # Questions sans AUCUN cas annoté (ni OUI ni NON) -> pas de few-shot
+    # inventé. A.3.1/A.3.2 ont un cas NON mais pas de cas OUI — pas
+    # "aucun cas annoté" au sens strict, cf. FEW_SHOTS.
+    for code in ("B.1.2", "B.2.2"):
+        fs = grid_prompts.FEW_SHOTS.get(code) or {}
+        _test(f"Pas de few-shot pour {code} (aucun cas annoté, CC-V4-12)",
+              fs.get("oui") is None and fs.get("non") is None)
 
-    # Codes retirés (absents de la Maquette Vierge, CC-V4-11) : plus de
-    # few-shot ni de question associée.
+    # Codes retirés (absents de la Maquette Vierge) : plus de prompt du tout.
     for code in ("A.1.3", "A.4.1", "B.2.3", "B.4.1"):
-        _test(f"{code} retiré : aucun few-shot résiduel (CC-V4-11)",
-              code not in grid_prompts._FEW_SHOT_EXAMPLES)
-        _test(f"{code} retiré : get_prompt('{code}', ...) -> None (code inconnu)",
-              grid_prompts.get_prompt(code, ["chunk"]) is None)
+        _test(f"{code} retiré : get_extraction_prompt('{code}', ...) -> None",
+              grid_prompts.get_extraction_prompt(code, ["chunk"]) is None)
 
-    # --- Parsing V4 avec SUJET (R10) ---
-    response_v4 = (
-        "STATUS: OUI\n"
-        'EVIDENCE_R: "test"\n'
-        "PAGE: 5\n"
-        "MITIGATION_STATUS: OUI_PROUVEE\n"
-        'EVIDENCE_MESURE: "test"\n'
-        "EVIDENCE_DEFAILLANCE:\n"
-        "SUJET: SPV\n"
-        "CONFIDENCE:"
-    )
-    parsed = grid_prompts.parse_response(response_v4)
-    _test("Parsing V4 : dict valide", isinstance(parsed, dict), f"Obtenu : {parsed!r}")
-    if isinstance(parsed, dict):
-        _test("Parsing V4 : status='OUI'", parsed["status"] == "OUI", f"Obtenu : {parsed['status']!r}")
-        _test("Parsing V4 : mitigation_status='OUI_PROUVEE'",
-              parsed["mitigation_status"] == "OUI_PROUVEE", f"Obtenu : {parsed['mitigation_status']!r}")
-        _test("Parsing V4 : subject_filter='SPV'", parsed["subject_filter"] == "SPV",
-              f"Obtenu : {parsed['subject_filter']!r}")
+    # --- Parsing JSON — Passe 1 (extraction) ---
+    resp_extraction = json_module.dumps({
+        "code": "B.1.1", "found": True, "verbatim": "test verbatim", "page": 9,
+        "subject": "SPV", "brief": "constat de deplacement",
+    })
+    parsed_ext = grid_prompts.parse_extraction_response(resp_extraction)
+    _test("Parsing extraction : dict valide", isinstance(parsed_ext, dict), f"Obtenu : {parsed_ext!r}")
+    if isinstance(parsed_ext, dict):
+        _test("Parsing extraction : found=True", parsed_ext["found"] is True)
+        _test("Parsing extraction : verbatim correct", parsed_ext["verbatim"] == "test verbatim")
+        _test("Parsing extraction : page=9", parsed_ext["page"] == 9)
+        _test("Parsing extraction : subject='SPV'", parsed_ext["subject"] == "SPV")
 
-    response_lender = (
-        "STATUS: OUI\n"
-        'EVIDENCE_R: "test"\n'
-        "PAGE: 5\n"
-        "MITIGATION_STATUS: N/A\n"
-        "EVIDENCE_MESURE:\n"
-        "EVIDENCE_DEFAILLANCE:\n"
-        "SUJET: PRÊTEUR\n"
-        "CONFIDENCE: Verbatim écarté par R10"
-    )
-    parsed_l = grid_prompts.parse_response(response_lender)
-    _test("Parsing V4 : subject_filter='PRÊTEUR'", parsed_l["subject_filter"] == "PRÊTEUR",
-          f"Obtenu : {parsed_l['subject_filter']!r}")
-    _test("Parsing V4 : MITIGATION_STATUS='N/A' -> mitigation_status=None",
-          parsed_l["mitigation_status"] is None, f"Obtenu : {parsed_l['mitigation_status']!r}")
+    # Tolérance backticks markdown autour du JSON
+    resp_fenced = "```json\n" + resp_extraction + "\n```"
+    parsed_fenced = grid_prompts.parse_extraction_response(resp_fenced)
+    _test("Parsing extraction : tolère les backticks markdown ```json ... ```",
+          isinstance(parsed_fenced, dict) and parsed_fenced["found"] is True)
 
-    # SUJET absent ou invalide -> repli sûr "SPV" (fail-open, R10 jamais bloquant)
-    response_no_sujet = "STATUS: NON\nEVIDENCE_R:\nPAGE: inconnue\nMITIGATION_STATUS: N/A\n"
-    parsed_ns = grid_prompts.parse_response(response_no_sujet)
-    _test("Parsing V4 : SUJET absent -> subject_filter='SPV' (repli sûr)",
-          parsed_ns["subject_filter"] == "SPV", f"Obtenu : {parsed_ns['subject_filter']!r}")
+    # Tolérance texte parasite avant/après le JSON
+    resp_wrapped = "Voici le résultat :\n" + resp_extraction + "\nFin de réponse."
+    parsed_wrapped = grid_prompts.parse_extraction_response(resp_wrapped)
+    _test("Parsing extraction : tolère du texte avant/après le JSON",
+          isinstance(parsed_wrapped, dict) and parsed_wrapped["found"] is True)
 
-    response_bad_sujet = "STATUS: NON\nEVIDENCE_R:\nPAGE: inconnue\nMITIGATION_STATUS: N/A\nSUJET: AUTRE\n"
-    parsed_bs = grid_prompts.parse_response(response_bad_sujet)
-    _test("Parsing V4 : SUJET invalide -> subject_filter='SPV' (repli sûr)",
-          parsed_bs["subject_filter"] == "SPV", f"Obtenu : {parsed_bs['subject_filter']!r}")
+    # found=false
+    resp_not_found = json_module.dumps({
+        "code": "B.1.1", "found": False, "verbatim": None, "page": None,
+        "subject": None, "brief": "aucun passage pertinent",
+    })
+    parsed_nf = grid_prompts.parse_extraction_response(resp_not_found)
+    _test("Parsing extraction : found=False", parsed_nf["found"] is False)
 
-    # 7. parse_response("garbage") retourne None (pas de ligne STATUS)
-    _test("Test 7 : parse_response('garbage') -> None", grid_prompts.parse_response("garbage") is None)
+    # subject absent/invalide -> repli AMBIGUOUS (JAMAIS SPV, cf. R10)
+    resp_no_subject = json_module.dumps({
+        "code": "B.1.1", "found": True, "verbatim": "x", "page": None, "brief": "test",
+    })
+    parsed_no_subj = grid_prompts.parse_extraction_response(resp_no_subject)
+    _test("Parsing extraction : subject absent -> repli AMBIGUOUS",
+          parsed_no_subj["subject"] == "AMBIGUOUS", f"Obtenu : {parsed_no_subj['subject']!r}")
+
+    # found manquant/invalide -> None (parsing échoué)
+    resp_no_found = json_module.dumps({"code": "B.1.1", "verbatim": "x"})
+    _test("Parsing extraction : 'found' absent -> None (parsing échoué)",
+          grid_prompts.parse_extraction_response(resp_no_found) is None)
+
+    # JSON illisible -> None
+    _test("Parsing extraction : JSON illisible -> None",
+          grid_prompts.parse_extraction_response("ceci n'est pas du JSON") is None)
+    _test("Parsing extraction : chaîne vide -> None",
+          grid_prompts.parse_extraction_response("") is None)
+
+    # --- Parsing JSON — Passe 2 (qualification) ---
+    resp_qual = json_module.dumps({
+        "code": "B.1.1", "status": "OUI", "confidence": "HIGH",
+        "mitigation_status": "OUI_PROUVEE", "verbatim_r": "risque", "verbatim_a_mesure": "mesure",
+        "verbatim_a_defaillance": None, "brief_r": "test risque", "brief_a": "test mitigation",
+    })
+    parsed_qual = grid_prompts.parse_qualification_response(resp_qual)
+    _test("Parsing qualification : dict valide", isinstance(parsed_qual, dict), f"Obtenu : {parsed_qual!r}")
+    if isinstance(parsed_qual, dict):
+        _test("Parsing qualification : status='OUI'", parsed_qual["status"] == "OUI")
+        _test("Parsing qualification : mitigation_status='OUI_PROUVEE'",
+              parsed_qual["mitigation_status"] == "OUI_PROUVEE")
+        _test("Parsing qualification : confidence='HIGH'", parsed_qual["confidence"] == "HIGH")
+
+    # NA_ARGUMENTE — nouveau statut CC-V4-12 (cf. AUDIT_PERTINENCE_NOTE_CADRAGE.md point 3)
+    resp_na = json_module.dumps({
+        "code": "B.1.1", "status": "NA_ARGUMENTE", "confidence": "HIGH",
+        "mitigation_status": None, "verbatim_r": "PS5 non declenchee", "verbatim_a_mesure": "",
+        "verbatim_a_defaillance": None, "brief_r": "motif explicite d'inapplicabilite", "brief_a": "",
+    })
+    parsed_na = grid_prompts.parse_qualification_response(resp_na)
+    _test("Parsing qualification : status='NA_ARGUMENTE' accepté", parsed_na["status"] == "NA_ARGUMENTE")
+
+    # status invalide -> None (parsing échoué)
+    resp_bad_status = json_module.dumps({"code": "B.1.1", "status": "PEUT-ETRE"})
+    _test("Parsing qualification : status invalide -> None",
+          grid_prompts.parse_qualification_response(resp_bad_status) is None)
+
+    # mitigation_status invalide -> None (pas d'exception)
+    resp_bad_mit = json_module.dumps({"code": "B.1.1", "status": "OUI", "mitigation_status": "AUTRE_CHOSE"})
+    parsed_bad_mit = grid_prompts.parse_qualification_response(resp_bad_mit)
+    _test("Parsing qualification : mitigation_status invalide -> None (pas d'exception)",
+          parsed_bad_mit["mitigation_status"] is None)
+
+    # confidence absente -> repli LOW (prudent, pas HIGH par défaut)
+    resp_no_conf = json_module.dumps({"code": "B.1.1", "status": "NON"})
+    parsed_no_conf = grid_prompts.parse_qualification_response(resp_no_conf)
+    _test("Parsing qualification : confidence absente -> repli LOW (prudent)",
+          parsed_no_conf["confidence"] == "LOW")
+
+    _test("Parsing qualification : JSON illisible -> None",
+          grid_prompts.parse_qualification_response("pas du JSON") is None)
 
 
 def _zero_risk_grid_answers():
@@ -1556,10 +1607,12 @@ def test_temporal_layer_marking():
 
 
 def test_grid_analyze_v4():
-    """Tests d'intégration de l'orchestrateur V4 (grid_analyze.py, directive
-    CC-V4-06). Backend LLM monkey-patché (même idiome que la section 1.5,
-    llm_backend._dispatch) — pas d'appel réseau réel."""
-    print("\n--- 1.15 Orchestrateur Grille V4 (grid_analyze.py) ---\n")
+    """Tests d'intégration de l'orchestrateur V4, architecture 2 passes
+    (grid_analyze.py, directive CC-V4-12). Backend LLM monkey-patché —
+    pas d'appel réseau réel."""
+    print("\n--- 1.15 Orchestrateur Grille V4 — 2 passes (grid_analyze.py, CC-V4-12) ---\n")
+
+    import json as json_module
 
     import config
     import llm_backend
@@ -1575,34 +1628,39 @@ def test_grid_analyze_v4():
     finally:
         config.GRID_V4_ENABLED = _orig_enabled
 
-    # --- Backend LLM simulé, déterministe : NON partout, sauf B.3.1 (OUI
-    # = risque, schéma STANDARD depuis CC-V4-11) avec une mitigation
-    # prouvée. B.3.1 n'utilise plus de template dédié identifiable par un
-    # marqueur de polarité (cf. grid_prompts.py, _B31_PROMPT_TEMPLATE
-    # devenu CODE MORT DORMANT) — on distingue donc B.3.1 par sa
-    # formulation R propre (unique parmi les 12 questions).
-    def _fake_dispatch(backend, prompt, model, options, timeout):
-        if "Absence de données de référence" in prompt:
-            return (
-                "STATUS: OUI\n"
-                'EVIDENCE_R: "aucune etude de reference socio-economique disponible"\n'
-                "PAGE: 10\n"
-                "MITIGATION_STATUS: OUI_PROUVEE\n"
-                'EVIDENCE_MESURE: "verification tierce independante realisee"\n'
-                "EVIDENCE_DEFAILLANCE:\n"
-                "SUJET: SPV\n"
-                "CONFIDENCE:\n"
-            )
-        return (
-            "STATUS: NON\n"
-            "EVIDENCE_R:\n"
-            "PAGE: inconnue\n"
-            "MITIGATION_STATUS: N/A\n"
-            "EVIDENCE_MESURE:\n"
-            "EVIDENCE_DEFAILLANCE:\n"
-            "SUJET: SPV\n"
-            "CONFIDENCE:\n"
-        )
+    # --- Backend LLM simulé, déterministe, 2 passes JSON : found=False
+    # partout (Passe 2 jamais appelée), SAUF B.3.1 (OUI = risque, schéma
+    # STANDARD depuis CC-V4-11) avec une mitigation prouvée en Passe 2.
+    # Distinction Passe 1/Passe 2 : "VERBATIM EXTRAIT" n'apparaît que dans
+    # le prompt de qualification (cf. grid_prompts._QUALIFICATION_PROMPT).
+    # Distinction B.3.1 : sa formulation R ("Absence de données de
+    # référence") apparaît dans les DEUX passes (question_r est injecté
+    # dans les deux templates).
+    def _fake_dispatch(backend, prompt, model, options, timeout, response_format=None):
+        is_qualification = "VERBATIM EXTRAIT" in prompt
+        is_b31 = "Absence de données de référence" in prompt
+
+        if not is_qualification:
+            if is_b31:
+                return json_module.dumps({
+                    "code": "B.3.1", "found": True,
+                    "verbatim": "aucune etude de reference socio-economique disponible",
+                    "page": 10, "subject": "SPV", "brief": "absence de baseline",
+                })
+            return json_module.dumps({
+                "code": "X", "found": False, "verbatim": None, "page": None,
+                "subject": None, "brief": "rien trouve",
+            })
+
+        # Passe 2 — uniquement atteinte si found=True (donc B.3.1 ici)
+        return json_module.dumps({
+            "code": "B.3.1", "status": "OUI", "confidence": "HIGH",
+            "mitigation_status": "OUI_PROUVEE",
+            "verbatim_r": "aucune etude de reference socio-economique disponible",
+            "verbatim_a_mesure": "verification tierce independante realisee",
+            "verbatim_a_defaillance": None,
+            "brief_r": "absence de baseline", "brief_a": "verification tierce",
+        })
 
     chunks = [{"text": "Passage générique pertinent pour l'analyse du projet.", "page": 5}]
 
@@ -2190,6 +2248,7 @@ def test_integration_chunks_to_grid():
     et le flag GRID_V4_ENABLED est restauré après le test (isolation)."""
     print("\n--- 2.5a Branchement chunks -> Grille V4 (search.chunk_text réel) ---\n")
 
+    import json
     import config
     import llm_backend
     import search
@@ -2219,11 +2278,13 @@ def test_integration_chunks_to_grid():
 
     chunks_for_grid = [{"text": c, "page": None} for c in chunks]
 
-    def _fake_dispatch(backend, prompt, model, options, timeout):
-        return (
-            "STATUS: NON\nEVIDENCE_R:\nPAGE: inconnue\nMITIGATION_STATUS: N/A\n"
-            "EVIDENCE_MESURE:\nEVIDENCE_DEFAILLANCE:\nSUJET: SPV\nCONFIDENCE:\n"
-        )
+    def _fake_dispatch(backend, prompt, model, options, timeout, response_format=None):
+        # CC-V4-12 : Passe 1 (extraction) uniquement — found=False partout,
+        # la Passe 2 n'est donc jamais atteinte pour ce test.
+        return json.dumps({
+            "code": "X", "found": False, "verbatim": None, "page": None,
+            "subject": None, "brief": "rien trouve",
+        })
 
     _orig_enabled = config.GRID_V4_ENABLED
     _orig_dispatch = llm_backend._dispatch

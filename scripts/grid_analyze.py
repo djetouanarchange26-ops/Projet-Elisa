@@ -1,40 +1,62 @@
 """
-GRILLE ESG V4 — orchestrateur (directive CC-V4-06)
+GRILLE ESG V4 — orchestrateur, architecture 2 passes (directive CC-V4-12)
 =====================================================================
 Assemble la chaîne complète pour UN document déjà chunké : classification
-des sections structurelles (grid_sections.py), un appel LLM par question
-(grid_prompts.py + llm_backend.py), scoring déterministe
-(grid_scoring.py) et assemblage du résultat final (grid_result.py).
+des sections structurelles (grid_sections.py), DEUX appels LLM par
+question active (grid_prompts.py + llm_backend.py, cf. ci-dessous),
+scoring déterministe (grid_scoring.py) et assemblage du résultat final
+(grid_result.py) — la forme du résultat assemblé (grid_result.py) et le
+calcul du score (grid_scoring.py) sont INCHANGÉS par CC-V4-12, ce module
+se contente de traduire la sortie JSON 2 passes dans le même contrat
+qu'avant (status/mitigation_status/evidence_r/evidence_a/confidence_note/
+silence_applied/qualifying).
 
-FRAGILE (hérité, pas revu par CC-V4-06) : ce module ne fait AUCUN
-retrieval sémantique par question — tous les chunks du document (moins
-les exclusions ESAP/plaintes IFC, cf. grid_sections.py) sont passés tels
-quels à chaque prompt. Un retrieval plus fin (top-k par question, FAISS
-ou autre) est un chantier séparé si la taille de contexte devient un
-problème réel sur de gros documents (45-70 pages) — non traité ici.
+FRAGILE (hérité) : ce module ne fait AUCUN retrieval sémantique par
+question — tous les chunks du document (moins les exclusions ESAP/
+plaintes IFC, cf. grid_sections.py) sont passés à la Passe 1. Un
+retrieval plus fin (top-k par question, FAISS ou autre) est un chantier
+séparé si la taille de contexte devient un problème réel — non traité ici.
 
 `chunks` (paramètre d'entrée) : list de dicts {"text": str, "page":
 int|None}, déjà découpés en amont (cf. search.chunk_text() pour le
-découpage brut ; l'appariement page/texte n'est pas fait par ce module).
+découpage brut).
 
-Invariant CC-V4-06 : UN SEUL appel LLM par question, jamais deux (pas de
-second appel pour la sous-question de mitigation) — tous les templates de
-grid_prompts.py demandent le statut R ET le statut de mitigation dans la
-même réponse structurée, y compris B.3.1 (a_condition="r_non" : la
-sous-question A n'est simplement pas pertinente si le LLM répond OUI,
-cf. grid_scoring._resolve_gain qui l'ignore dans ce cas).
+ARCHITECTURE 2 PASSES (CC-V4-12, remplace l'invariant "un seul appel LLM
+par question" de CC-V4-06) :
+  Passe 1 — EXTRACTION (grid_prompts.get_extraction_prompt) : le texte
+    contient-il un fait/état/constat pertinent pour la question ? Pas de
+    jugement R5/R7 ici. found=false -> Passe 2 SAUTÉE, repli déterministe
+    sur R5 (cf. _silence_status). found=true -> Passe 2 appelée SUR le
+    verbatim extrait (jamais sur les chunks bruts).
+  Passe 2 — QUALIFICATION (grid_prompts.get_qualification_prompt) :
+    OUI/NON/NA_ARGUMENTE + statut de mitigation, à partir du seul verbatim
+    de la Passe 1.
+  Coût : jusqu'à 2 appels/question active, mais la Passe 2 est sautée dès
+  que found=false (sur un dossier propre, la majorité des questions
+  s'arrêtent après la Passe 1).
 
-R10 (filtre de sujet) : évalué PAR LE LLM dans le prompt (grid_prompts.py),
-jamais recalculé ici en post-traitement. Ce module se contente
-d'enregistrer ce que le LLM a répondu (champ SUJET) dans `qualifying`
-pour que l'analyste (boucle humaine, cf. Note de Cadrage décision 2) puisse
-vérifier — il ne force JAMAIS un OUI à NON automatiquement, cf. "Ce qu'il
-ne faut PAS faire" de la directive.
+R5 (silence) : DÉTERMINISTE côté Python depuis CC-V4-12, le LLM n'est
+plus consulté du tout quand found=false ou qu'aucun chunk candidat
+n'existe — cf. _silence_status et _SILENCE_CONFIRMS_ABSENCE (justification
+détaillée dans grid_prompts.py, section "DÉCISION R5" de son docstring).
 
-Fail-open (ADR-002) : un LLM injoignable, une réponse inexploitable, ou
-l'absence de tout passage candidat pour une question retombent tous sur la
-règle de silence R5 (grid_questions.py::silence_type) — jamais de crash,
-jamais de question sans réponse dans le résultat final.
+R10 (filtre de sujet) : décidé PAR LE LLM en Passe 1 (champ `subject`),
+consommé tel quel par la Passe 2, jamais recalculé ici en post-traitement
+— ce module se contente d'enregistrer ce que le LLM a répondu dans
+`qualifying` pour la boucle humaine (Note de Cadrage décision 2), jamais
+de bascule automatique OUI->NON.
+
+Fail-open (ADR-002), 3 paliers distincts (cf. docstring de
+_answer_for_question pour le détail) :
+  1. Aucun chunk candidat -> R5 silence, aucun appel LLM.
+  2. Passe 1 injoignable/inexploitable -> pas de repli silence : traité
+     comme found=true avec le texte brut des chunks en verbatim (le LLM
+     n'a pas pu trancher, mais les chunks existent bel et bien — R5 ne
+     s'applique qu'à l'ABSENCE de passage, pas à l'échec du LLM), Passe 2
+     tente quand même de qualifier ce texte brut.
+  3. Passe 2 injoignable/inexploitable (found=true en Passe 1) -> status
+     OUI, confidence LOW (biais R1 : en cas de doute, signaler le risque),
+     pas de mitigation.
 """
 
 import logging
@@ -49,11 +71,25 @@ import llm_backend
 
 logger = logging.getLogger(__name__)
 
+# --- R5 (silence), cas particulier (CC-V4-12) ---
+# CHOIX: questions dont la formulation R est elle-même "Absence de X ?" —
+# pour celles-ci, ne RIEN trouver dans le document EST la réponse (le
+# silence confirme l'absence que la question demande), donc OUI direct,
+# PAS le repli "etat -> INCONNU" générique. Cf. justification complète
+# (pourquoi ce n'est PAS un remplacement du mécanisme silence_type
+# existant, seulement un cas particulier au-dessus) dans le docstring de
+# grid_prompts.py, section "DÉCISION R5".
+_SILENCE_CONFIRMS_ABSENCE = {"B.3.1", "B.3.2"}
+
 
 def _silence_status(question):
-    """Statut de repli selon silence_type (R5, grid_questions.py, CC-08) :
-    "etat" -> INCONNU (silence ne prouve pas l'absence d'un système/état),
-    "evenement" -> NON (silence vaut absence du fait daté)."""
+    """Statut de repli selon silence_type (R5, grid_questions.py, CC-08),
+    avec le cas particulier _SILENCE_CONFIRMS_ABSENCE en priorité :
+    - code dans _SILENCE_CONFIRMS_ABSENCE -> OUI (le silence EST le risque)
+    - "etat" -> INCONNU (silence ne prouve pas l'absence d'un système/état)
+    - "evenement" -> NON (silence vaut absence du fait daté)."""
+    if question["code"] in _SILENCE_CONFIRMS_ABSENCE:
+        return "OUI"
     return "INCONNU" if question.get("silence_type") == "etat" else "NON"
 
 
@@ -69,44 +105,48 @@ def _silence_fallback(question, reason):
     }
 
 
-def _parse_page(page_str):
-    if page_str and page_str.strip().isdigit():
-        return int(page_str.strip())
+def _normalize_page(page_value):
+    """La Passe 1 peut renvoyer `page` en int, en string numérique, ou
+    None/null — normalise vers int ou None, jamais d'exception sur une
+    valeur mal formée (fail-open, cohérent ADR-002)."""
+    if isinstance(page_value, int):
+        return page_value
+    if isinstance(page_value, str) and page_value.strip().isdigit():
+        return int(page_value.strip())
     return None
 
 
-def _build_evidence_r(parsed):
-    passage = (parsed.get("evidence_r") or "").strip()
-    if not passage:
-        return None
-    return {"passage": passage, "page": _parse_page(parsed.get("page"))}
+_SUBJECT_QUALIFYING = {
+    "LENDER": ("lender", "lender_supervision"),
+    "AMBIGUOUS": ("ambiguous", "ambiguous_note"),
+    "INDIRECT": ("indirect_not_imputable", "indirect_note"),
+}
 
 
-def _build_evidence_a(parsed):
-    mesure = (parsed.get("evidence_mesure") or "").strip() or None
-    defaillance = (parsed.get("evidence_defaillance") or "").strip() or None
-    if mesure is None and defaillance is None:
-        return None
-    return {"verbatim_mesure": mesure, "verbatim_defaillance": defaillance, "page": None}
-
-
-def _sanitize_mitigation(question, status, mitigation_status):
-    """Neutralise mitigation_status si `status` n'est pas du côté "risque"
-    de la question (cf. a_condition, grid_questions.py) — un LLM peut
-    halluciner un MITIGATION_STATUS alors que la sous-question A n'était
-    pas censée être évaluée (ex: B.3.1 répond OUI mais renvoie quand même
-    un statut de mitigation). Sans ce filet, grid_result.validate_grid_result
-    (CC-V4-03) rejetterait le résultat entier (ValueError) pour une
-    hallucination mineure du LLM — fail-open : on neutralise plutôt que de
-    faire échouer toute l'analyse."""
-    a_condition = question.get("a_condition", "r_oui")
-    risk_status = "OUI" if a_condition == "r_oui" else "NON"
-    if status != risk_status:
-        return None
-    return mitigation_status
+def _build_qualifying(subject, verbatim_r, na_argumente_reason):
+    """Assemble `qualifying` (CC-V4-12) : sujet R10 (LENDER/AMBIGUOUS/
+    INDIRECT — SPV/SUBSTITUTION n'ont rien à signaler, le score reflète
+    déjà directement le fait) ET/OU motif N/A argumenté (nouveau CC-V4-12,
+    cf. AUDIT_PERTINENCE_NOTE_CADRAGE.md point 3 — distinct d'un NON
+    simple, verbatim + motif explicite d'inapplicabilité). Les deux
+    peuvent coexister (rare) — simple dict, pas de logique de score ici,
+    jamais relu par grid_scoring.py."""
+    qualifying = {}
+    if subject in _SUBJECT_QUALIFYING:
+        key, note_key = _SUBJECT_QUALIFYING[subject]
+        qualifying["subject_filter"] = key
+        qualifying[note_key] = verbatim_r or ""
+    if na_argumente_reason:
+        # CHOIX: valeur texte (pas bool) — grid_display._render_evidence_explorer
+        # filtre `v is not True`, un simple booléen n'apparaîtrait jamais
+        # à l'analyste (cf. grid_display.py, non modifié par CC-V4-12).
+        qualifying["na_argumente_reason"] = na_argumente_reason
+    return qualifying or None
 
 
 def _answer_for_question(question, question_chunks, document_type):
+    """Orchestre les 2 passes pour UNE question. Cf. docstring du module
+    pour les 3 paliers de fail-open (aucun chunk / Passe 1 KO / Passe 2 KO)."""
     code = question["code"]
 
     if not question_chunks:
@@ -114,68 +154,100 @@ def _answer_for_question(question, question_chunks, document_type):
         return _silence_fallback(question, "Aucun passage pertinent trouvé dans le document sur ce sujet.")
 
     context_texts = [c["text"] for c in question_chunks]
-    prompt = grid_prompts.get_prompt(code, context_texts, document_type=document_type)
 
-    raw = llm_backend.call_llm(prompt)  # fail-open : None si backend injoignable (cf. llm_backend.py, ADR-002)
-    parsed = grid_prompts.parse_response(raw) if raw else None
+    # --- Passe 1 — EXTRACTION ---
+    extraction_prompt = grid_prompts.get_extraction_prompt(code, context_texts, document_type=document_type)
+    raw_extraction = llm_backend.call_llm(extraction_prompt, response_format="json")
+    extracted = grid_prompts.parse_extraction_response(raw_extraction) if raw_extraction else None
 
-    if parsed is None:
-        logger.warning("grid_analyze: %s — LLM injoignable ou réponse inexploitable, repli sur R5.", code)
-        return _silence_fallback(question, "LLM injoignable ou réponse mal formée — repli sur la règle de silence (R5).")
+    if extracted is None:
+        # Palier 2 : Passe 1 injoignable/inexploitable — PAS un repli
+        # silence (les chunks existent, cf. docstring module) : on traite
+        # comme found=true avec le texte brut, la Passe 2 tente quand même.
+        logger.warning(
+            "grid_analyze: %s — Passe 1 (extraction) injoignable ou réponse inexploitable, "
+            "repli sur le texte brut des chunks (pas R5 — des passages existent).", code
+        )
+        raw_joined = "\n---\n".join(context_texts)[:4000]
+        extracted = {"found": True, "verbatim": raw_joined, "page": None, "subject": "AMBIGUOUS", "brief": None}
 
-    status = parsed["status"]
-    mitigation_status = _sanitize_mitigation(question, status, parsed.get("mitigation_status"))
+    if not extracted["found"]:
+        logger.info("grid_analyze: %s — Passe 1 : rien trouvé (found=false), repli sur R5.", code)
+        return _silence_fallback(question, extracted.get("brief") or "Aucun passage pertinent trouvé (Passe 1).")
 
-    # R10 — filtre de sujet : simple enregistrement de ce que le LLM a
-    # répondu (il a déjà appliqué R10 dans le prompt, cf. grid_prompts.py)
-    # — AUCUN filtre post-traitement ici, jamais de bascule automatique
-    # OUI->NON codée en Python, cf. docstring du module. Les 4 catégories
-    # (SPV/PRÊTEUR/SUBSTITUTION/AMBIGU/INDIRECT) sont toutes enregistrées
-    # dans `qualifying` pour traçabilité analyste — seul SPV et SUBSTITUTION
-    # n'ont rien de particulier à signaler (le score reflète alors
-    # directement le fait, pas une exclusion de sujet).
-    qualifying = None
-    subject_filter = parsed.get("subject_filter")
-    if subject_filter == "PRÊTEUR":
-        qualifying = {
-            "subject_filter": "lender",
-            "lender_supervision": parsed.get("evidence_r") or "",
+    # --- Passe 2 — QUALIFICATION (uniquement si found=true) ---
+    qualification_prompt = grid_prompts.get_qualification_prompt(
+        code, extracted["verbatim"], extracted["subject"], document_type=document_type
+    )
+    raw_qualification = llm_backend.call_llm(qualification_prompt, response_format="json")
+    qualified = grid_prompts.parse_qualification_response(raw_qualification) if raw_qualification else None
+
+    evidence_r = {"passage": extracted["verbatim"], "page": _normalize_page(extracted.get("page"))}
+
+    if qualified is None:
+        # Palier 3 : Passe 2 injoignable/inexploitable — biais R1 (en cas
+        # de doute, signaler le risque) : OUI, confidence LOW, pas de
+        # mitigation (jamais évaluée).
+        logger.warning(
+            "grid_analyze: %s — Passe 2 (qualification) injoignable ou réponse inexploitable, "
+            "repli R1 : status=OUI, confidence=LOW.", code
+        )
+        qualifying = _build_qualifying(extracted["subject"], extracted["verbatim"], None)
+        return {
+            "status": "OUI",
+            "mitigation_status": None,
+            "evidence_r": evidence_r,
+            "evidence_a": None,
+            "confidence_note": "[LOW] Passe 2 injoignable ou réponse mal formée — repli R1 (signale le risque).",
+            "silence_applied": False,
+            "qualifying": qualifying,
         }
-        if status == "OUI":
-            logger.warning(
-                "grid_analyze: %s — verbatim sujet PRÊTEUR sans substitution trouvée par le "
-                "LLM ; réponse OUI maintenue telle quelle mais qualifiée (R10, validation "
-                "analyste requise, cf. Note de Cadrage décision 2).", code
-            )
-    elif subject_filter == "AMBIGU":
-        qualifying = {
-            "subject_filter": "ambiguous",
-            "ambiguous_note": parsed.get("evidence_r") or "",
+
+    status = qualified["status"]
+    na_argumente_reason = None
+    if status == "NA_ARGUMENTE":
+        # CC-V4-12 : nouveau statut, distinct d'un NON simple (motif
+        # explicite d'inapplicabilité) — cf. AUDIT_PERTINENCE_NOTE_CADRAGE.md
+        # point 3. grid_scoring.py n'accepte QUE OUI/NON/NA/INCONNU (non
+        # modifié, hors périmètre CC-V4-12) : traduit en "NON" pour le
+        # calcul (0 pénalité, comportement déjà correct), la nuance
+        # "argumenté" est conservée dans `qualifying` pour l'analyste,
+        # PAS perdue silencieusement.
+        na_argumente_reason = qualified.get("brief_r") or qualified.get("verbatim_r") or "Motif non précisé"
+        status = "NON"
+
+    # Mitigation illégale si status != OUI (ex: NA_ARGUMENTE traduit en
+    # NON, ou LLM qui hallucine un mitigation_status sur un NON) — même
+    # garde-fou que l'ancien _sanitize_mitigation, cf. grid_result.py
+    # (validate_grid_result rejetterait sinon le résultat entier).
+    mitigation_status = qualified.get("mitigation_status") if status == "OUI" else None
+
+    evidence_a = None
+    if qualified.get("verbatim_a_mesure") or qualified.get("verbatim_a_defaillance"):
+        evidence_a = {
+            "verbatim_mesure": qualified.get("verbatim_a_mesure"),
+            "verbatim_defaillance": qualified.get("verbatim_a_defaillance"),
+            "page": None,
         }
-        if status == "OUI":
-            logger.warning(
-                "grid_analyze: %s — sujet AMBIGU mais réponse OUI reçue du LLM (R10 exige "
-                "de ne PAS attribuer un manquement ambigu à la SPV) ; réponse maintenue "
-                "telle quelle mais qualifiée, validation analyste requise.", code
-            )
-    elif subject_filter == "INDIRECT":
-        qualifying = {
-            "subject_filter": "indirect_not_imputable",
-            "indirect_note": parsed.get("evidence_r") or "",
-        }
-        if status == "OUI":
-            logger.warning(
-                "grid_analyze: %s — sujet INDIRECT (manquement non imputable à la SPV) mais "
-                "réponse OUI reçue du LLM ; réponse maintenue telle quelle mais qualifiée, "
-                "validation analyste requise.", code
-            )
+
+    confidence_note = qualified.get("brief_r")
+    if qualified["confidence"] == "LOW" and confidence_note:
+        confidence_note = f"[LOW] {confidence_note}"
+
+    qualifying = _build_qualifying(extracted["subject"], qualified.get("verbatim_r") or extracted["verbatim"], na_argumente_reason)
+    if extracted["subject"] in ("LENDER", "AMBIGUOUS", "INDIRECT") and status == "OUI":
+        logger.warning(
+            "grid_analyze: %s — sujet %s mais status=OUI reçu (R10 exige de ne pas attribuer "
+            "par défaut à la SPV) ; réponse maintenue telle quelle mais qualifiée, validation "
+            "analyste requise (Note de Cadrage décision 2).", code, extracted["subject"]
+        )
 
     return {
         "status": status,
         "mitigation_status": mitigation_status,
-        "evidence_r": _build_evidence_r(parsed),
-        "evidence_a": _build_evidence_a(parsed),
-        "confidence_note": parsed.get("confidence_note"),
+        "evidence_r": evidence_r,
+        "evidence_a": evidence_a,
+        "confidence_note": confidence_note,
         "silence_applied": False,
         "qualifying": qualifying,
     }
@@ -206,9 +278,9 @@ def analyze_grid(chunks, na_modules=None, document_type=1, context=None):
         grid_questions.get_active_questions().
     document_type : int, clé de grid_questions.DOCUMENT_TYPES (R11), saisi
         manuellement par l'analyste. Conditionne le mode de lecture dans
-        le prompt (matérialisation R2, formes de preuve R11, couches
-        temporelles R8, hiérarchie des sources R9 — cf.
-        grid_prompts.get_prompt) et les métadonnées du résultat
+        les prompts (matérialisation R2/R8 en Passe 1, formes de preuve
+        R11/hiérarchie R9 en Passe 2 — cf. grid_prompts.get_extraction_prompt/
+        get_qualification_prompt, CC-V4-12) et les métadonnées du résultat
         (reading_mode/reading_mode_label). Passé tel quel à
         grid_scoring.compute_grid_score() pour ces métadonnées —
         N'AFFECTE PAS le calcul du score lui-même (cf. grid_scoring.py,
@@ -254,8 +326,9 @@ def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override
     """Comme analyze_grid(), mais résout document_type (R11) AVANT
     l'annotation/le scoring au lieu de le recevoir en paramètre obligatoire
     — cf. grid_doctype.py : le type de document conditionne le mode de
-    lecture de chaque question (grid_prompts.get_prompt), il doit donc être
-    connu avant le premier appel LLM par question, pas après coup.
+    lecture de chaque question (grid_prompts.get_extraction_prompt/
+    get_qualification_prompt, CC-V4-12), il doit donc être connu avant le
+    premier appel LLM par question, pas après coup.
 
     full_text : texte intégral du document (pas les chunks) — transmis tel
     quel à grid_doctype.detect_document_type(), qui a besoin d'un extrait

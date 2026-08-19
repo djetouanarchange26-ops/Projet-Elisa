@@ -1,0 +1,3 @@
+project_number,project_name,country,sector,disclosed_date,n_documents,corpus_file,t0_status
+42613,ACT II Wind,Pakistan,Infrastructure,2019-09-16,2,IFC_42613_ACTIIWind_CTRL.txt,A_VERIFIER
+40976,Tricom Wind Power Pvt Limited,Pakistan,Infrastructure,2019-09-16,2,IFC_40976_TricomWindPowerPvtLimited_CTRL.txt,A_VERIFIER

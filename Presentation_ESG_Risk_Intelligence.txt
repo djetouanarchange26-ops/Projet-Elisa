@@ -1,0 +1,328 @@
+========================================================================
+ESG RISK INTELLIGENCE — PRESENTATION DU PROJET
+CA-CIB · Portfolio Management · Energy & Infrastructure Group
+Document prepare le 25/07/2026
+========================================================================
+
+ACCES A L'APPLICATION (test en cours, acces temporaire)
+------------------------------------------------------------------------
+URL : https://premier-clearing-scholars-strongly.trycloudflare.com
+
+Cet acces est temporaire (tunnel depuis un poste local, pas encore un
+hebergement definitif) : il ne fonctionne que si le poste source reste
+allume et connecte. Si le lien ne repond plus, redemander une URL a jour.
+Aucune authentification n'est requise pour l'instant — a ne pas partager
+au-dela des personnes autorisees a tester.
+
+
+========================================================================
+1. LE PROJET EN UNE PHRASE
+========================================================================
+
+Un outil qui analyse un document de due diligence (ESIA, ESAP, rapport de
+suivi...) et estime le risque ESG (environnemental, social, gouvernance)
+d'un projet de financement, en le comparant a une base de 46 projets
+historiques reels (IFC/Banque Mondiale) dont on connait l'issue (plainte
+deposee ou non aupres du mecanisme CAO, et quand).
+
+Objectif : donner a l'analyste credit un premier filtre rapide sur les
+risques ESG d'un dossier, avant ou pendant l'instruction, avec les preuves
+qui justifient chaque score — pas une boite noire.
+
+
+========================================================================
+2. COMMENT CA MARCHE (principe general)
+========================================================================
+
+1. On telecharge (ou colle) le texte d'un document.
+2. Le document est compare, passage par passage, aux 46 projets
+   historiques deja documentes — via une technique de similarite
+   semantique (le systeme trouve les passages historiques qui parlent
+   du meme sujet).
+3. Chaque passage similaire trouve est relu par une IA locale qui
+   confirme s'il s'agit vraiment d'un probleme reel, ou d'une mention
+   positive/resolue du meme sujet (etape ajoutee recemment, voir
+   section 4).
+4. Un modele statistique (modele de survie, meme famille que ceux
+   utilises en actuariat/risque de credit) estime la probabilite qu'un
+   incident ESG survienne dans les 12 mois, a partir de 3 scores :
+   risque communautaire, pollution/suivi environnemental, conformite
+   structurelle (normes IFC — Performance Standards).
+5. Le systeme classe le dossier en 4 grades : D (Vigilance), C
+   (Attention), B (Alerte), A (Escalade) — seuils reglables.
+
+
+========================================================================
+3. HISTORIQUE DU TRAVAIL — CE QUI A ETE FAIT
+========================================================================
+
+PHASE 1 — Construction initiale
+  - Constitution du corpus : 46 projets IFC reels (28 avec plainte CAO
+    connue, 18 "temoins" sans incident), documents publics.
+  - Recherche semantique (FAISS) + modele de survie (Cox) pour estimer
+    le risque.
+  - Interface Streamlit avec 4 onglets.
+
+PHASE 2 — Corrections de fond (bugs bloquants)
+  - Fuite de donnees dans l'entrainement (un projet se comparait a
+    lui-meme, faussant les scores).
+  - Troncature silencieuse des documents longs.
+  - Chemins de fichiers codes en dur (bloquait tout deploiement).
+  - Recommandation affichee toujours identique quel que soit le
+    resultat reel.
+  - Ré-annotation du corpus par contenu reel (pas par heritage global
+    du projet) — ameliore nettement la qualite des comparaisons.
+
+PHASE 3 — Diagnostic du vrai probleme
+  Constat : un document "propre" (sans probleme) obtenait presque le
+  meme score de risque qu'un document decrivant un vrai probleme.
+  - Premiere hypothese (fausse piste) : le modele de comparaison de
+    texte n'etait pas assez precis -> teste avec un modele plus gros
+    (mpnet a la place de MiniLM) -> aucune amelioration sur le vrai
+    probleme.
+  - Vrai diagnostic : le systeme de comparaison detecte le SUJET d'un
+    passage mais pas s'il est positif ou negatif. Exemple concret
+    teste : "le plan d'action montre des retards" (risque reel) et
+    "le plan d'action est termine en avance" (positif) ont ete juges
+    quasi-identiques par le systeme, car tous deux parlent du meme
+    sujet (le plan d'action).
+
+PHASE 4 — Solution : une IA locale de confirmation
+  Ajout d'un modele d'intelligence artificielle (Ollama, execute
+  localement — aucune donnee n'est envoyee a un service externe) qui
+  relit chaque passage suspect et confirme s'il decrit un vrai risque
+  ou une situation positive/resolue. Applique a 4 endroits (detail en
+  section 4).
+  Resultat mesure : un texte "propre" de test, qui obtenait un score de
+  risque communautaire de 78/100 avant cette correction, tombe a 0/100
+  apres — et un texte a risque reel reste correctement eleve.
+
+PHASE 5 — Nouvelles fonctionnalites (voir section 5)
+  Export PDF/Excel, upload de plusieurs documents a la fois,
+  tracabilite des preuves derriere chaque score.
+
+PHASE 6 — Nettoyage pour un usage non-technique
+  Suppression des plantages et des informations techniques (nom de
+  modele, parametres internes) qui n'ont pas leur place dans une
+  interface destinee a un analyste credit.
+
+
+========================================================================
+4. LE FILTRE IA — LES 4 ENDROITS OU IL INTERVIENT
+========================================================================
+
+1. Score de risque (Flag Scores) : filtre les passages historiques
+   trouves qui parlent du bon sujet mais ne decrivent pas un vrai
+   probleme — evite qu'un document propre soit note comme risque.
+2. Signaux detectes (Detected Signals) : meme filtre applique a la
+   liste des alertes affichees et au surlignage du document.
+3. Cas similaires (Historical Similar Cases) : au lieu d'un extrait de
+   texte brut souvent coupe en plein milieu de phrase, un resume clair
+   en une phrase, genere par l'IA.
+4. Recommandation : au lieu d'une phrase generique identique pour tous
+   les dossiers d'un meme grade ("Vigilance — monitoring standard"),
+   une recommandation qui cite les signaux reellement detectes dans CE
+   document precis.
+
+Dans les 4 cas, si l'IA locale n'est pas disponible pour une raison ou
+une autre, le systeme retombe automatiquement sur l'ancien comportement
+(pas de plantage) — mais l'analyste ne voit alors plus l'amelioration.
+
+
+========================================================================
+5. GUIDE DES 4 PAGES DE L'APPLICATION
+========================================================================
+
+------------------------------------------------------------------------
+PAGE 1 — TRANSACTION ANALYSIS (page principale, pour analyser un dossier)
+------------------------------------------------------------------------
+C'est la page de travail quotidien de l'analyste.
+
+Entree du document :
+  - Deux modes : uploader un ou plusieurs fichiers (PDF/TXT), ou coller
+    du texte directement.
+  - Plusieurs fichiers en meme temps sont acceptes (ex: ESIA + ESAP +
+    rapport de suivi) — traites comme un seul dossier de due diligence,
+    pas des analyses separees.
+  - Bouton "Run Analysis" pour lancer le traitement (peut prendre de
+    quelques secondes a une ou deux minutes selon la longueur du
+    document et le nombre de signaux a verifier par l'IA).
+
+Une fois l'analyse terminee, la page affiche, dans l'ordre :
+
+  1. Boutons d'export (PDF / Excel) — pour joindre le resultat a un
+     memo de comite de credit sans repasser par un copier-coller
+     manuel.
+
+  2. Risk Assessment Summary — le grade final (D/C/B/A), le label
+     (Vigilance/Attention/Alerte/Escalade), la probabilite estimee
+     d'incident ESG a 12 mois, et une recommandation ecrite qui cite
+     les signaux reellement trouves dans le document.
+
+  3. Flag Scores — 3 barres de score (0 a 100) : risque communautaire,
+     pollution/suivi, conformite structurelle. Sous chaque barre, un
+     menu "Evidence behind this score" (a cliquer pour deplier) montre
+     les vrais passages historiques qui ont fait monter ce score
+     precis, avec le nom du projet et un resume.
+
+  4. Detected Signals — la liste des alertes trouvees directement dans
+     le document uploade (pas dans l'historique), avec la categorie de
+     risque et un extrait de preuve.
+
+  5. Annotated Document — le texte du document avec les passages a
+     risque surlignes par couleur (rouge = communaute, orange =
+     pollution, bleu/teal = conformite).
+
+  6. Historical Similar Cases — les 5 projets historiques les plus
+     proches du document analyse, avec le pourcentage de similarite, ce
+     qui leur est arrive reellement (incident survenu a X mois, ou
+     aucun incident observe), et un resume du passage concerne.
+
+------------------------------------------------------------------------
+PAGE 2 — PORTFOLIO DASHBOARD (historique de la session)
+------------------------------------------------------------------------
+Recapitule toutes les analyses lancees pendant la session en cours
+(tableau : document, grade, probabilite, categorie de risque
+dominante, date/heure). Filtre par grade, et compteurs resumes (total,
+nombre en grade A, B, C-D).
+
+Attention : historique de session uniquement — perdu a la fermeture du
+navigateur. Pas encore de sauvegarde permanente en base de donnees
+(chantier a venir si l'outil est valide).
+
+------------------------------------------------------------------------
+PAGE 3 — PATTERN LIBRARY (statistiques du corpus historique)
+------------------------------------------------------------------------
+Ne concerne pas un document en particulier — c'est une vue d'ensemble
+sur les 46 projets historiques : quels types de signaux reviennent le
+plus souvent parmi les projets qui ont eu un incident ESG connu, sur
+combien de projets, et le delai moyen observe avant l'incident.
+Utile pour se faire une idee generale des risques les plus frequents
+dans ce type de financement, independamment d'un dossier precis.
+
+------------------------------------------------------------------------
+PAGE 4 — SETTINGS (reglages)
+------------------------------------------------------------------------
+Deux choses reglables par l'analyste :
+  - Les seuils de grade (a partir de quelle probabilite on passe de
+    Vigilance a Attention, etc.) — modifiable par curseurs, applique
+    immediatement a la prochaine analyse.
+  - Informations sur le corpus (nombre de projets avec incident connu,
+    nombre de projets temoins, taille de la base de comparaison) —
+    pour information, non modifiable.
+Les details techniques internes (nom du modele d'IA utilise, parametres
+de recherche...) ont volontairement ete retires de cette page — ils
+n'apportent rien a l'analyste et ont ete source de confusion.
+
+
+========================================================================
+6. LIMITES CONNUES A L'HEURE ACTUELLE (transparence)
+========================================================================
+
+- Le grade final (D/C/B/A) reste peu discriminant sur les categories
+  "pollution" et "conformite" : la base historique ne compte pas encore
+  assez de projets representatifs de ces deux categories pour que le
+  modele apprenne a bien les distinguer. A ameliorer en enrichissant le
+  corpus.
+- L'analyse peut prendre plus de temps qu'avant (quelques secondes a
+  1-2 minutes) a cause de la relecture par l'IA — un choix assume :
+  priorite a la fiabilite du resultat plutot qu'a la vitesse pour
+  l'instant.
+- Aucune sauvegarde permanente : les analyses sont perdues a la
+  fermeture du navigateur.
+- Le corpus est en anglais et vient de projets IFC/Banque Mondiale
+  publics — pas encore de support multilingue, et pas de donnees
+  propres a CA-CIB integrees.
+- L'acces actuel (lien de test) depend d'un poste de travail qui reste
+  allume — pas encore un hebergement permanent.
+
+
+========================================================================
+7. CALENDRIER RETENU
+========================================================================
+
+- Finalisation des iterations et entrainements : semaine du 20 aout.
+- Presentation officielle : 25 aout (echeance repoussee depuis le 5 aout).
+
+
+========================================================================
+8. SUITE A LA SESSION DE TRAVAIL DU 25/07 — CE QUI A DEJA ETE TRAITE
+========================================================================
+
+Plusieurs points souleves lors de la derniere session de demo ont ete
+resolus le jour meme (avant meme la relecture formelle des notes de
+reunion) :
+
+- Le paragraphe sur les mesures de restauration des moyens de
+  subsistance, signale a tort comme un risque lors de la demo, ne
+  devrait plus etre mal classe : c'est exactement le bug de polarite
+  corrige en phase 3-4 (section 3 ci-dessus).
+- La piste evoquee — reduire automatiquement le poids d'un risque
+  communautaire quand il est suivi de vocabulaire de mitigation dans le
+  meme paragraphe — a ete implementee, sous une forme plus robuste
+  qu'une regle de proximite de mots-cles : une IA locale lit le sens du
+  passage plutot que de chercher des mots-cles a proximite.
+- L'export etait disponible en Excel seulement -> le PDF a ete ajoute
+  le meme jour (section 5, Page 1).
+- La question de la confidentialite des donnees (usage d'IA open
+  source) : confirme, le modele tourne integralement en local sur le
+  poste de travail, aucune donnee n'est envoyee a un service externe.
+
+
+========================================================================
+9. PISTES D'AMELIORATION PROPOSEES — A VALIDER ENSEMBLE
+========================================================================
+
+Ces pistes sont des propositions, pas des decisions actees. A discuter
+et prioriser ensemble avant mise en oeuvre.
+
+Gains rapides (independants les uns des autres) :
+  1. Regrouper l'affichage des signaux detectes par categorie de risque
+     plutot que par signal individuel — evite qu'un meme paragraphe
+     apparaisse sur plusieurs cartes distinctes (point souleve en demo).
+  2. Ajouter un score chiffre (0-100) en complement du grade lettre
+     (D/C/B/A), juge peu explicite sur la gravite/l'echelle du risque.
+  3. Reagencer l'ecran de resultat pour mettre en avant les signaux et
+     les preuves plutot que le pourcentage de probabilite — pour mieux
+     correspondre au positionnement voulu : un instrument d'alerte et
+     de justification de decision, pas un pur predicteur de defaut ESG
+     (les incidents etant rares, une prediction pure perd vite de sa
+     valeur percue).
+  4. Migration vers un hebergement permanent, independant d'un poste de
+     travail — engagement pris pour remplacer l'acces temporaire actuel
+     (voir section acces en debut de document). A caler avant le 20
+     aout.
+
+Necessitent un arbitrage de design avant developpement :
+  5. Ponderation manuelle du risque, pour refleter le ressenti de
+     l'analyste en plus du calcul statistique. Deux approches possibles :
+     (a) garder un calcul 100% statistique (le modele apprend deja
+     l'importance de chaque categorie depuis l'historique) ; ou
+     (b) ajouter un champ de note/justification de l'analyste qui
+     enregistre un desaccord eventuel, sans modifier le calcul —
+     tracable, sans diluer la rigueur du modele.
+  6. Grades trop souvent en "D" : cause identifiee, pas assez de
+     projets representatifs des categories pollution/conformite dans la
+     base historique actuelle. Piste : integrer la recherche de projets
+     supplementaires dans ces categories a l'analyse des 46 projets
+     existants.
+
+Non bloquant :
+  7. Nom definitif du projet a arreter (actuellement provisoire).
+
+
+========================================================================
+10. AUTRES CHANTIERS A PLUS LONG TERME
+========================================================================
+
+- Optimiser les temps de traitement.
+- Resume automatique de documents longs, page par page.
+- Question-reponse libre sur un document uploade (type "chat" avec le
+  document).
+- Enrichir le corpus historique (plus de projets, plus equilibre entre
+  categories de risque).
+
+
+========================================================================
+Fin du document.
+========================================================================
