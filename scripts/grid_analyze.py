@@ -197,7 +197,7 @@ def _na_answer(question):
     }
 
 
-def analyze_grid(chunks, na_modules=None, document_type=1):
+def analyze_grid(chunks, na_modules=None, document_type=1, context=None):
     """Analyse un document via la Grille V4 (12 questions).
 
     chunks : list de dicts {"text": str, "page": int|None} — chunks du
@@ -206,12 +206,17 @@ def analyze_grid(chunks, na_modules=None, document_type=1):
         grid_questions.get_active_questions().
     document_type : int, clé de grid_questions.DOCUMENT_TYPES (R11), saisi
         manuellement par l'analyste. Conditionne le mode de lecture dans
-        le prompt (formes de preuve R11, couches temporelles R8,
-        hiérarchie des sources R9 — cf. grid_prompts.get_prompt) et les
-        métadonnées du résultat (reading_mode/reading_mode_label). Passé
-        tel quel à grid_scoring.compute_grid_score() pour ces métadonnées
-        — N'AFFECTE PAS le calcul du score lui-même (cf. grid_scoring.py,
+        le prompt (matérialisation R2, formes de preuve R11, couches
+        temporelles R8, hiérarchie des sources R9 — cf.
+        grid_prompts.get_prompt) et les métadonnées du résultat
+        (reading_mode/reading_mode_label). Passé tel quel à
+        grid_scoring.compute_grid_score() pour ces métadonnées —
+        N'AFFECTE PAS le calcul du score lui-même (cf. grid_scoring.py,
         CC-V4-02 : "ne pas ajouter de branche document_type dans le calcul").
+    context : dict | None (BLOC D, CC-V4-11) — les 4 champs manuels
+        obligatoires saisis par l'analyste (cf. grid_result.build_grid_result).
+        Simple pass-through jusqu'au résultat final — jamais lu ni utilisé
+        ici, jamais transmis au LLM, jamais dans le calcul du score.
 
     Retourne un résultat V4 complet (cf. grid_result.build_grid_result),
     ou None si le pipeline Grille est désactivé.
@@ -242,10 +247,10 @@ def analyze_grid(chunks, na_modules=None, document_type=1):
         question_results[code] = _answer_for_question(question, question_chunks, document_type)
 
     scoring = grid_scoring.compute_grid_score(question_results, document_type=document_type)
-    return grid_result.build_grid_result(question_results, scoring)
+    return grid_result.build_grid_result(question_results, scoring, context=context)
 
 
-def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override=None):
+def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override=None, context=None):
     """Comme analyze_grid(), mais résout document_type (R11) AVANT
     l'annotation/le scoring au lieu de le recevoir en paramètre obligatoire
     — cf. grid_doctype.py : le type de document conditionne le mode de
@@ -260,6 +265,8 @@ def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override
     LLM n'est PAS appelée (pas d'appel superflu) ; le résultat porte
     quand même un bloc "document_type_detection" avec source="manuel"
     pour que l'UI affiche la provenance de façon uniforme.
+    context : dict | None (BLOC D, CC-V4-11) — transmis tel quel à
+        analyze_grid() (cf. sa docstring).
 
     Ajoute au résultat un bloc "document_type_detection" :
         {"document_type": int, "confidence": "haute"|"moyenne"|"faible"|
@@ -284,7 +291,9 @@ def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override
     else:
         detection = grid_doctype.detect_document_type(full_text)
 
-    result = analyze_grid(chunks, na_modules=na_modules, document_type=detection["document_type"])
+    result = analyze_grid(
+        chunks, na_modules=na_modules, document_type=detection["document_type"], context=context
+    )
     if result is not None:
         result["document_type_detection"] = detection
     return result

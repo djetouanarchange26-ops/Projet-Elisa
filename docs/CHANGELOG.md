@@ -1,5 +1,69 @@
 # Changelog
 
+## 2026-08-19 — Restauration Maquette Vierge (12 questions) + R2 conditionnelle + 4 champs manuels (directive CC-V4-11)
+
+**Contexte** : 3 dossiers testés, 3 scores faux (CBG 85 au lieu de 28-31,
+Mundra 0 au lieu de 16, Aysha 85 au lieu de 73). Deux causes racines
+identifiées : (1) les 12 questions du code V4 précédent (A.1.1, A.1.3,
+A.2.1, A.3.1, A.4.1, B.1.1, B.1.2, B.2.1, B.2.2, B.2.3, B.3.1, B.4.1)
+n'étaient pas celles de la Maquette Vierge (référence : `1_Maquette_
+Vierge_Grille_ESG (1).pdf`) — 4 codes n'existaient pas dans le document
+source (A.1.3, A.4.1, B.2.3, B.4.1) et 4 questions réelles manquaient
+(A.1.2, A.2.2, A.3.2, B.3.2) ; (2) R2 (matérialisation) était appliquée de
+façon trop stricte sur les documents Type 1 (due diligence), traitant des
+constats d'ESRS comme des "vulnérabilités futures".
+
+**BLOC A — `scripts/grid_questions.py`** : QUESTIONS entièrement
+remplacée par les 12 codes exacts de la Maquette Vierge (vérifiés page par
+page contre le PDF), 6 Cat A / 6 Cat B (au lieu de 5/7), formulations R/A
+reprises mot pour mot. **B.3.1 passe en polarité STANDARD** (`inverted_
+polarity=False`, `a_condition="r_oui"`) — la Maquette Vierge formate
+B.3.1 ("Absence de données de référence baseline socio-économiques ?")
+exactement comme les 11 autres questions, contrairement à l'ancien B.3.1
+(biodiversité, inversé). `shared_cap_group` n'est plus porté par aucune
+question (A.1.1/A.1.3 fusionnées en un seul A.1.1) — le mécanisme de
+plafond partagé (`grid_scoring._apply_shared_cap`) reste en place,
+dormant, pas supprimé (convention code mort). `na_module="B.2"` réduit à
+2 questions (B.2.1/B.2.2) au lieu de 3.
+
+**BLOC B — `scripts/grid_prompts.py`** : R2 devient conditionnelle au
+`reading_mode` (nouveau : `_MATERIALISATION_INSTRUCTION` vs `_SUIVI`) —
+un constat documenté (état existant, legacy issue, écart relevé) déclenche
+OUI en mode instruction (Type 1/2), la règle stricte (fait daté survenu,
+attribué au SPV) reste pour le mode suivi (Type 3/4). Few-shot entièrement
+reconstruit pour les 12 nouveaux codes (voir docstring `_FEW_SHOT_
+EXAMPLES` pour le détail du remappage — notamment l'exemple Indorama
+airshed/WHO limits, fourni par la directive sous l'étiquette "B.2.2", en
+réalité replacé sous B.2.1/Air puisque B.2.2 porte désormais sur l'Eau).
+`_B31_PROMPT_TEMPLATE` et `_ARTICULATION_B23_B41` (R2bis) deviennent CODE
+MORT DORMANT (plus jamais atteints), conservés.
+
+**BLOC C — vérification** : la logique R7 (deux portes + garde-fou
+statut 4 exigeant double verbatim, y compris rejet explicite d'une simple
+conjonction concessive isolée) était déjà correctement encodée dans le
+prompt — aucun changement de code nécessaire.
+
+**BLOC D — 4 champs manuels obligatoires** : `app.py` (sidebar,
+bloquants avant "Run Analysis"), `grid_result.build_grid_result()` /
+`grid_analyze.analyze_grid()` / `analyze_grid_auto()` / `pipeline_
+dispatch.run_active_pipeline()` (nouveau paramètre `context`, pass-through
+jusqu'au résultat), `export.py` (affichés en en-tête PDF/Excel, avant le
+score).
+
+**PENDING_ELISA (non résolu)** : `scripts/test.py::_mundra_answers_v4` —
+avec les 12 codes Maquette Vierge, les réponses Mundra données par la
+directive elle-même (BLOC A §3) calculent 29/ORANGE, pas 16/ROUGE comme
+visé ailleurs dans la directive. L'écart correspond à l'ancien B.4.1
+(irritations cutanées liées au rejet de la centrale, fait réel du dossier
+CGPL/Tata Mundra) qui n'a plus de question d'accueil évidente dans les 12
+codes actuels. Décision requise : où reloger ce fait (B.1.1 ? B.2.2 ?
+aucune question ?) avant de pouvoir recalibrer sur 16. Cf. `AUDIT_
+PERTINENCE_NOTE_CADRAGE.md` pour l'audit complet (Aysha=61 vs 73, A.1.1
+≠ opposition communautaire dans le code, etc.).
+
+**Tests** : `python scripts/test.py --unit --integ --business` —
+364/364 passés.
+
 ## 2026-08-08 — Simplification du pipeline : retrait Cox + cross-encoder
 
 **Contexte** : même après la migration LLM (Together), une analyse restait à

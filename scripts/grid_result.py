@@ -13,6 +13,12 @@ Format du résultat (dict Python, sérialisable en JSON) :
         "document_type": int,           # 1-4 (R11, CC-V4-02/03)
         "reading_mode": str,             # "instruction" | "suivi"
         "reading_mode_label": str,       # label humain du type de document
+        "context": dict or None,        # 4 champs manuels obligatoires
+            # (BLOC D, CC-V4-11) : {"ep_classification": str,
+            # "sensitivity": str, "financing_amount": str, "cacib_role":
+            # str} — saisis par l'analyste dans app.py, jamais extraits du
+            # document, jamais utilisés dans le calcul du score. Simple
+            # pass-through, comme "qualifying" par question.
         "questions": [
             {
                 "code": str,                    # "A.1.1"
@@ -138,7 +144,7 @@ _VALID_STATUSES = {"OUI", "NON", "NA", "INCONNU"}
 _VALID_COLORS = {"VERT", "JAUNE", "ORANGE", "ROUGE"}
 
 
-def build_grid_result(question_results, scoring):
+def build_grid_result(question_results, scoring, context=None):
     """Assemble un résultat V3 complet à partir des réponses par question
     et du résultat de grid_scoring.compute_grid_score().
 
@@ -154,6 +160,15 @@ def build_grid_result(question_results, scoring):
     scoring : dict — retour de grid_scoring.compute_grid_score(), calculé
               sur les mêmes réponses (status/mitigation_status) que
               question_results.
+    context : dict | None (BLOC D, CC-V4-11) — les 4 champs manuels
+        obligatoires (classification Equator Principles, statut de
+        sensibilité, montant du financement, rôle de CACIB), saisis par
+        l'analyste dans app.py AVANT le lancement de l'analyse (contrôle
+        humain bloquant, cf. app.py). Simple pass-through, comme
+        "qualifying" — JAMAIS relu par grid_scoring.py, n'entre JAMAIS
+        dans le calcul du score (cf. "Ce qu'il ne faut PAS faire",
+        directive BLOC D). None si l'appelant ne les fournit pas
+        (rétro-compatibilité tests/appels existants).
 
     CHOIX: pas de recalcul du score ici — build_grid_result assemble,
     grid_scoring.compute_grid_score() calcule. Le détail par question du
@@ -210,6 +225,7 @@ def build_grid_result(question_results, scoring):
         "document_type": scoring.get("document_type"),
         "reading_mode": scoring.get("reading_mode"),
         "reading_mode_label": scoring.get("reading_mode_label"),
+        "context": context,
         "questions": questions,
         "scoring": {
             "total_penalty": scoring["total_penalty"],

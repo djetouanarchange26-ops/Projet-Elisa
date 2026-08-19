@@ -48,10 +48,12 @@ CHANTIER CC-08 (passe CBG, règles de silence) :
 
 CHANTIER CC-V4-02 :
   - 4 zones de couleur (au lieu de 3) — cf. get_color.
-  - Plafond partagé A.1.1/A.1.3 (grid_questions.py::shared_cap_group) :
-    même famille de risque (interruption d'activité subie par le
-    projet) — si les deux sont OUI, la pénalité combinée reste plafonnée
-    à -25 (pas -50). Appliqué en post-traitement après le calcul
+  - Plafond partagé (grid_questions.py::shared_cap_group) : mécanisme
+    dormant depuis CC-V4-11 — les deux questions qui le déclenchaient
+    (A.1.1/A.1.3) ont été fusionnées en un seul A.1.1 dans la Maquette
+    Vierge (cf. grid_questions.py), donc plus aucune question ne porte
+    ce champ. Conservé pour un futur couplage, jamais supprimé
+    silencieusement. Appliqué en post-traitement après le calcul
     individuel de chaque détail, cf. bloc "Plafond partagé" ci-dessous.
   - B.3.1 : sous-question A active quand R=NON (a_condition="r_non") —
     cf. schéma inversé ci-dessus et _resolve_gain.
@@ -203,10 +205,12 @@ def _resolve_gain(question, answer):
 
 def _apply_shared_cap(details):
     """Plafond partagé V4 (directive CC-V4-02) : les questions d'un même
-    grid_questions.py::shared_cap_group (A.1.1/A.1.3 pour l'instant)
-    partagent un plafond de pénalité combiné à SHARED_CAP_PENALTY (-25)
-    au lieu de cumuler -25 par question — même famille de risque
-    (interruption d'activité subie par le projet).
+    grid_questions.py::shared_cap_group partagent un plafond de pénalité
+    combiné à SHARED_CAP_PENALTY (-25) au lieu de cumuler -25 par
+    question. DORMANT depuis CC-V4-11 : plus aucune question de la
+    Maquette Vierge ne porte ce champ (cf. grid_questions.py) — cette
+    fonction ne trouve alors jamais de groupe et retourne 0, sans effet
+    sur le score.
 
     CHOIX: version simple — si plusieurs questions du même groupe sont
     pénalisées (OUI), seule la première (ordre de grid_questions.QUESTIONS)
@@ -295,10 +299,23 @@ def compute_grid_score(answers, document_type=1):
     détail retourné. Le verrou B.2.1->B.2.2 (cf. _apply_b21_b22_lock) peut
     forcer B.2.2 à INCONNU pour le calcul même si `answers["B.2.2"]`
     contient "NON" — sans modifier `answers` lui-même.
+    FRAGILE (CC-V4-11) : ce verrou a été conçu quand B.2.1="suivi des
+    rejets" et B.2.2="dépassement de seuils" formaient une paire
+    mesure/conclusion cohérente (pas de mesure -> pas de conclusion
+    possible sur un dépassement). Depuis la restauration Maquette Vierge,
+    B.2.1="Dépassements récurrents Air (PM10)" et B.2.2="Défaut de
+    modélisation du rejet thermique (Eau)" sont deux vecteurs de
+    pollution DISTINCTS (air vs eau) — le couplage sémantique d'origine
+    ne tient plus. Conservé tel quel (hors périmètre CC-V4-11, qui ne
+    devait pas aller au-delà du remplacement des codes) mais à
+    revalider avec Elisa avant la soutenance : appliquer ce verrou sur
+    un B.2.2 (eau) simplement parce que B.2.1 (air) = OUI n'a plus de
+    justification métier évidente.
 
-    CC-V4-02 : A.1.1/A.1.3 partagent un plafond de pénalité combiné à -25
-    (cf. _apply_shared_cap) ; B.3.1 a désormais une sous-question A
-    active quand R=NON (a_condition="r_non", cf. _resolve_gain) ; score
+    CC-V4-02 : le plafond partagé (cf. _apply_shared_cap) est dormant
+    depuis CC-V4-11 (aucune question ne porte plus shared_cap_group) ;
+    B.3.1 utilise le schéma standard depuis CC-V4-11 (a_condition="r_oui",
+    inverted_polarity=False — cf. grid_questions.py) ; score
     == 0 -> result["saturation"] = True ("ROUGE — Éliminatoire").
 
     Retourne : dict avec score, détail des pénalités/gains, metadata
@@ -363,7 +380,7 @@ def compute_grid_score(answers, document_type=1):
             "verrou_applique": verrou_applique,
         })
 
-    # --- Plafond partagé V4 (A.1.1/A.1.3, directive CC-V4-02) ---
+    # --- Plafond partagé V4 (directive CC-V4-02, dormant depuis CC-V4-11) ---
     total_penalty += _apply_shared_cap(details)
 
     total_gain_capped = min(total_gain, MITIGATION_CAP)

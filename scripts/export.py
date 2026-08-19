@@ -334,6 +334,32 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     pdf.set_text_color(0, 0, 0)
     pdf.ln(4)
 
+    # --- Contexte du dossier (BLOC D, CC-V4-11) : AVANT le score, cf.
+    # directive ("afficher ces 4 champs en en-tete du rapport, AVANT le
+    # score") — saisie manuelle analyste, jamais extraite du document.
+    context = result_v4.get("context")
+    if context:
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 6, "Contexte du dossier", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 9)
+        pdf.cell(
+            0, 5, _safe(f"Classification Equator Principles : {context.get('ep_classification') or '-'}"),
+            new_x="LMARGIN", new_y="NEXT",
+        )
+        pdf.cell(
+            0, 5, _safe(f"Statut de sensibilite : {context.get('sensitivity') or '-'}"),
+            new_x="LMARGIN", new_y="NEXT",
+        )
+        pdf.cell(
+            0, 5, _safe(f"Montant du financement : {context.get('financing_amount') or '-'}"),
+            new_x="LMARGIN", new_y="NEXT",
+        )
+        pdf.cell(
+            0, 5, _safe(f"Role de CACIB : {context.get('cacib_role') or '-'}"),
+            new_x="LMARGIN", new_y="NEXT",
+        )
+        pdf.ln(3)
+
     rgb = _COLOR_RGB_V4.get(color, (100, 100, 100))
     pdf.set_font("Helvetica", "B", 20)
     pdf.set_text_color(*rgb)
@@ -535,11 +561,18 @@ def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx")
     # --- Feuille Synthese ---
     ws1 = wb.active
     ws1.title = "Synthese"
+    # Contexte du dossier (BLOC D, CC-V4-11) : AVANT le score, cf.
+    # directive — saisie manuelle analyste, jamais extraite du document.
+    context = result_v4.get("context") or {}
     summary_rows = [
         ("Projet", project_name or "-"),
         ("Genere le", datetime.now().strftime("%Y-%m-%d %H:%M")),
         ("Grille", result_v4.get("grid_version") or "-"),
         ("Mode de lecture", result_v4.get("reading_mode_label") or "-"),
+        ("Classification Equator Principles", context.get("ep_classification") or "-"),
+        ("Statut de sensibilite", context.get("sensitivity") or "-"),
+        ("Montant du financement", context.get("financing_amount") or "-"),
+        ("Role de CACIB", context.get("cacib_role") or "-"),
         ("Score (/100)", scoring["score"]),
         ("Couleur", scoring["color"]),
         ("Saturation (score plancher)", "Oui" if scoring.get("saturation") else "Non"),

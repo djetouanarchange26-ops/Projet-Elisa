@@ -38,6 +38,7 @@ def run_active_pipeline(
     document_label="Document analysé",
     risk_thresholds=None,
     k=15,
+    grid_context=None,
 ):
     """Lance EXACTEMENT un pipeline d'analyse (jamais les deux), selon
     config.ACTIVE_PIPELINE.
@@ -49,6 +50,11 @@ def run_active_pipeline(
         requis seulement si ACTIVE_PIPELINE="v4" (cf. app.py::_chunks_with_pages).
     na_modules, document_type_override : passés tels quels à
         grid_analyze.analyze_grid_auto() (V4 seulement).
+    grid_context : dict | None (BLOC D, CC-V4-11) — les 4 champs manuels
+        obligatoires saisis dans la sidebar (cf. app.py), passés tels
+        quels à grid_analyze.analyze_grid_auto() (V4 seulement) ; ignoré
+        si ACTIVE_PIPELINE="legacy" (l'ancien pipeline n'a pas de bloc
+        "context" dans son résultat).
     risk_thresholds, k, document_label : passés tels quels à analyze()
         (legacy seulement).
 
@@ -72,6 +78,7 @@ def run_active_pipeline(
             extracted_text,
             na_modules=na_modules,
             document_type_override=document_type_override,
+            context=grid_context,
         )
         return {"pipeline": "v4", "result": None, "result_v4": result_v4}
 

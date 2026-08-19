@@ -799,6 +799,48 @@ with st.sidebar:
             help="B.2 (pollution) : N/A si le projet n'a aucun vecteur de pollution",
         )
 
+        # ── 4 champs manuels obligatoires (BLOC D, CC-V4-11) ──
+        # CHOIX: saisie libre, JAMAIS extraite du document (cf. "Ce qu'il
+        # ne faut PAS faire" de la directive) — ces 4 champs sont du
+        # contexte de dossier que seul l'analyste connaît (classification
+        # EP, sensibilité portefeuille, montant, rôle CACIB), pas des
+        # informations qu'un LLM pourrait fiablement extraire d'un ESRS.
+        # index=None sur les selectbox -> aucune valeur par défaut
+        # trompeuse ; le blocage (cf. plus bas, avant "Run Analysis")
+        # se base sur ces 4 clés de session_state valant encore None/"".
+        st.markdown("---")
+        st.subheader("Contexte du dossier")
+
+        st.selectbox(
+            "Classification Equator Principles",
+            options=["A", "B", "C"],
+            index=None,
+            key="grid_v4_ep_class",
+            help="Catégorie E&S du projet",
+        )
+
+        st.selectbox(
+            "Statut de sensibilité",
+            options=["Sensible", "Non sensible", "Watchlist"],
+            index=None,
+            key="grid_v4_sensitivity",
+            help="Statut dans le portefeuille de la banque",
+        )
+
+        st.text_input(
+            "Montant du financement (M€ ou MUSD)",
+            key="grid_v4_financing",
+            help="Montant total du financement",
+        )
+
+        st.selectbox(
+            "Rôle de CACIB",
+            options=["Mandated Lead Arranger", "Participant", "Agent", "Co-arrangeur", "Autre"],
+            index=None,
+            key="grid_v4_cacib_role",
+            help="Rôle de CA-CIB dans le deal",
+        )
+
 
 # ══════════════════════════════════════════════════════════════
 # PAGE 1 — TRANSACTION ANALYSIS
@@ -836,14 +878,37 @@ if page == "🔍 Transaction Analysis":
 
     # ── Analyze button ───────────────────────────────────────
     has_input = bool(uploaded_files) or bool(pasted_text.strip())
+
+    # BLOC D (CC-V4-11) : les 4 champs manuels obligatoires ne bloquent
+    # QUE le pipeline V4 (le pipeline legacy n'a pas de bloc "context" et
+    # reste réservé à une comparaison technique ponctuelle, cf.
+    # pipeline_dispatch.py). En mode legacy, manual_fields_ok reste True
+    # pour ne rien bloquer inutilement.
+    if config.GRID_V4_ENABLED and config.ACTIVE_PIPELINE == "v4":
+        manual_fields_ok = all([
+            st.session_state.get("grid_v4_ep_class") is not None,
+            st.session_state.get("grid_v4_sensitivity") is not None,
+            (st.session_state.get("grid_v4_financing") or "").strip() != "",
+            st.session_state.get("grid_v4_cacib_role") is not None,
+        ])
+    else:
+        manual_fields_ok = True
+
     col_btn, col_status = st.columns([1, 3])
     with col_btn:
         analyze_clicked = st.button(
-            "▶ Run Analysis", type="primary", use_container_width=True, disabled=not has_input
+            "▶ Run Analysis", type="primary", use_container_width=True,
+            disabled=not has_input or not manual_fields_ok,
+        )
+    if has_input and not manual_fields_ok:
+        st.warning(
+            "Remplissez les 4 champs contextuels (Classification Equator Principles, "
+            "Statut de sensibilité, Montant du financement, Rôle de CACIB) dans la "
+            "barre latérale avant de lancer l'analyse."
         )
 
     analyze_error = None
-    if has_input and analyze_clicked:
+    if has_input and manual_fields_ok and analyze_clicked:
         with col_status:
             # DIRECTIVE_CLAUDE_CODE_ESG_V3, Tier 1 (§1.1) : st.status() plutôt
             # qu'un simple st.spinner() — rassure l'analyste que l'app n'est
@@ -887,6 +952,16 @@ if page == "🔍 Transaction Analysis":
                     # config.ACTIVE_PIPELINE, jamais les deux pour la même
                     # analyse — cf. scripts/pipeline_dispatch.py.
                     st.write(f"Analyse ESG en cours (pipeline actif : {config.ACTIVE_PIPELINE.upper()})...")
+                    # BLOC D (CC-V4-11) : les 4 champs manuels obligatoires,
+                    # déjà validés remplis (manual_fields_ok) avant que ce
+                    # bloc soit atteignable — simple pass-through jusqu'à
+                    # grid_result.py, jamais relu ici ni dans le score.
+                    grid_context = {
+                        "ep_classification": st.session_state.get("grid_v4_ep_class"),
+                        "sensitivity": st.session_state.get("grid_v4_sensitivity"),
+                        "financing_amount": st.session_state.get("grid_v4_financing"),
+                        "cacib_role": st.session_state.get("grid_v4_cacib_role"),
+                    }
                     dispatch_result = pipeline_dispatch.run_active_pipeline(
                         extracted_text,
                         chunks_for_grid=chunks_for_grid,
@@ -894,6 +969,7 @@ if page == "🔍 Transaction Analysis":
                         document_type_override=st.session_state.get("grid_v4_document_type_override"),
                         document_label=doc_label,
                         risk_thresholds=st.session_state.get("risk_thresholds"),
+                        grid_context=grid_context,
                         # FRAGILE: k (nombre de voisins FAISS interrogés, legacy
                         # seulement) n'est plus réglable depuis Settings —
                         # valeur validée par défaut, voir checklist.md.

@@ -33,12 +33,41 @@ Nouveautés V4 (CC-V4-05) :
     exemple inventé. Les questions sans cas annoté n'ont pas de few-shot
     (fallback "" dans get_prompt), ce n'est pas un oubli.
   - get_prompt(question_code, context_chunks, document_type=1) : le type
-    de document conditionne R11/R8/R9 mais ne change ni R1 ni R2 ni R7bis
-    ni R10 — ces règles sont universelles, valables sur les 4 types.
+    de document conditionne R11/R8/R9/R2 (cf. CC-V4-11 ci-dessous) mais
+    ne change ni R1 ni R7bis ni R10 — ces règles sont universelles,
+    valables sur les 4 types.
   - parse_response() : nouveau champ SUJET (R10), en plus des champs
     hérités (MITIGATION_STATUS remplace le binaire MITIGATION de CC-02,
     cf. CC-07 ; EVIDENCE_MESURE/EVIDENCE_DEFAILLANCE remplacent
     EVIDENCE_MITIGATION unique pour porter le double verbatim du statut 4).
+
+CORRECTIF CC-V4-11 ("Correctifs critiques Grille V4 — Soutenance
+25/08", BLOC B) — cause racine du sur-score CBG (85 au lieu de 28-31) :
+  - R2 devient CONDITIONNELLE au reading_mode (cf. _MATERIALISATION_*
+    ci-dessous), au lieu d'une règle unique trop stricte pour les
+    documents Type 1/2 (mode "instruction") : sur un ESRS de due
+    diligence, un constat documenté (fait passé, état existant, legacy
+    issue, écart relevé par le consultant) DOIT déclencher un OUI — le
+    LLM confondait un constat de due diligence avec une "vulnérabilité
+    future" et répondait NON à tort. R2 stricte (accompli seul, fait
+    daté imputé au SPV) reste inchangée pour le mode "suivi" (Types 3/4).
+  - Few-shot entièrement reconstruit pour les 12 nouveaux codes
+    (cf. grid_questions.py, BLOC A) : les anciens codes A.1.3/A.4.1/
+    B.2.3/B.4.1 n'existent plus, et plusieurs sujets ont changé de code
+    (ex. l'ancien B.2.2 "dépassement de seuils" générique devient
+    B.2.1 "Air/PM10" dans la Maquette Vierge — le few-shot Indorama sur
+    les dépassements d'état initial/géogéniques, qui porte sur la
+    qualité de l'air, a été déplacé en conséquence, PAS laissé sous
+    l'ancien code B.2.2 qui porte désormais sur l'Eau/rejet thermique).
+    Un few-shot dont le sujet ne correspond plus au code qui le porte
+    aurait pollué le prompt de la mauvaise question.
+  - Aucune question n'a plus `inverted_polarity=True` (cf.
+    grid_questions.py) : `_B31_PROMPT_TEMPLATE` et la branche qui
+    l'active dans get_prompt() ne sont plus jamais atteints — CODE MORT
+    DORMANT, conservé (convention CLAUDE.md), pas supprimé.
+  - `_ARTICULATION_B23_B41` (R2bis) : n'est plus jamais injectée
+    (question_code ne vaut plus jamais "B.2.3"/"B.4.1", ces codes
+    n'existant plus) — CODE MORT DORMANT, conservé.
 """
 
 import logging
@@ -69,9 +98,39 @@ _TEMPORAL_RULE_TYPE3 = """R8 — COUCHES TEMPORELLES (document Type 3) :
 - Couche 1 — résumé antérieur : contexte, faits avant la période auditée. N'ALIMENTE PAS le score.
 - Couche 2 — période auditée : SEULE couche qui alimente le score.
 - Couche 3 — observation postérieure : mission terrain récente. N'alimente pas le score.
-ATTENTION A.1.3 : les rapports CAO résument souvent des manifestations historiques. Vérifier la couche temporelle avant de cocher OUI."""
+ATTENTION A.1.1 : les rapports CAO résument souvent des manifestations historiques. Vérifier la couche temporelle avant de cocher OUI."""
 
 _TEMPORAL_RULE_OTHER = ""  # Pas de règle temporelle pour Type 1, 2, 4
+
+# --- R2 — matérialisation, conditionnelle au reading_mode (CC-V4-11) ---
+# CHOIX: R2 stricte ("fait daté, survenu, attribué au SPV") est correcte
+# pour un document de SUIVI rétrospectif (Types 3/4) mais trop stricte
+# pour un document d'INSTRUCTION (Types 1/2, due diligence pré-closing) —
+# un ESRS documente des CONSTATS (état existant, legacy issue, écart
+# relevé) qui ne sont pas des "événements survenus pendant une période de
+# monitoring" mais qui DOIVENT déclencher un OUI : c'est précisément
+# l'objet de la due diligence. Cause racine du sur-score CBG (85 au lieu
+# de 28-31, cf. directive CC-V4-11) : le LLM appliquait la version
+# stricte à un document Type 1 et traitait des constats documentés (540
+# plaignants, airshed dégradé) comme des "vulnérabilités futures".
+_MATERIALISATION_INSTRUCTION = """R2 — MATÉRIALISATION (mode INSTRUCTION — Type 1/2, due diligence) :
+Un CONSTAT DOCUMENTÉ dans le rapport de due diligence déclenche OUI. Cela inclut :
+- un fait passé avéré (déplacement, pollution, plainte) ;
+- un état existant documenté (airshed dégradé, absence de baseline) ;
+- un legacy issue non résolu (griefs historiques non compensés) ;
+- un écart de conformité constaté par le consultant.
+NE déclenche PAS un OUI en mode instruction :
+- une vulnérabilité théorique sans constat factuel ;
+- un risque mentionné uniquement dans l'analyse d'impact (ESIA) sans constat terrain ;
+- un engagement futur du sponsor sans début d'exécution."""
+
+_MATERIALISATION_SUIVI = """R2 — MATÉRIALISATION (mode SUIVI — Type 3/4, monitoring rétrospectif) :
+Seul un FAIT DATÉ, SURVENU durant la période de monitoring, ATTRIBUÉ AU PROJET (SPV) déclenche un OUI.
+Vérifier : verbe au passé accompli + fait daté + attribution causale au projet.
+NE déclenche PAS un OUI en mode suivi :
+- un droit, une politique, une procédure ;
+- une vulnérabilité future, un risque potentiel ;
+- un constat d'une période antérieure déjà couvert dans un précédent rapport."""
 
 _HIERARCHY_RULE_TYPE23 = """R9 — HIÉRARCHIE DES SOURCES :
 1. Constat de l'auditeur indépendant (CAO, panel, expert tiers)
@@ -84,6 +143,12 @@ RÈGLE : une déclaration client contredite par un constat d'auditeur dans le m�
 _HIERARCHY_RULE_OTHER = ""
 
 # --- R2bis — articulation B.2.3 / B.4.1 (correction V4) ---
+# CODE MORT DORMANT (CC-V4-11) : B.2.3 et B.4.1 n'existent plus dans
+# grid_questions.py (absents de la Maquette Vierge, cf. BLOC A) — la
+# condition d'injection dans get_prompt() (question_code in ("B.2.3",
+# "B.4.1")) ne matche donc plus jamais. Conservé (convention CLAUDE.md :
+# jamais de suppression silencieuse) au cas où un besoin similaire
+# (articulation entre deux questions pollution) réapparaîtrait.
 # CHOIX: injectée uniquement pour B.2.3 et B.4.1 (cf. get_prompt), pas dans
 # toutes les questions du template standard — évite de gonfler le prompt de
 # règles hors-sujet pour les 9 autres questions qui partagent ce template.
@@ -147,7 +212,7 @@ PASSAGES DU RAPPORT :
 
 R1 — BIAIS FAUX POSITIFS : en cas d'ambiguïté ou de doute persistant après application des règles ci-dessous, penche vers OUI (la réponse qui SIGNALE le risque) plutôt que vers celle qui le masque, et explique ton doute dans CONFIDENCE.
 
-R2 — MATÉRIALISATION : seul un FAIT DATÉ, SURVENU, ATTRIBUÉ AU PROJET déclenche un OUI. Un droit, une politique, une procédure, une vulnérabilité future = NON. Vérifier : verbe au passé accompli + fait daté + attribution causale au projet.
+{materialisation_rule}
 
 R5 — SILENCE :
 {silence_rule}
@@ -198,6 +263,11 @@ SUJET: SPV ou PRÊTEUR ou SUBSTITUTION ou AMBIGU ou INDIRECT
 CONFIDENCE: [explication du doute — ou vide]
 """
 
+# CODE MORT DORMANT (CC-V4-11) : plus aucune question de grid_questions.py
+# n'a inverted_polarity=True depuis la restauration Maquette Vierge (BLOC
+# A) — cette branche n'est donc plus jamais sélectionnée par get_prompt().
+# Conservée (convention CLAUDE.md : jamais de suppression silencieuse) au
+# cas où une future question inversée serait réintroduite par Elisa.
 _B31_PROMPT_TEMPLATE = """Tu es un analyste ESG spécialisé. Tu évalues si des mesures de compensation environnementale (offsets) ou un suivi écologique ont été EFFECTIVEMENT DÉPLOYÉS.
 
 TYPE DE DOCUMENT : {document_type_label}
@@ -238,8 +308,40 @@ CONFIDENCE: [si doute — ou vide]
 # ============================================================================
 # Few-shot par question — cas réels des 4 dossiers annotés (CBG, Mundra,
 # Aysha, Indorama). AUCUN exemple inventé — cf. "Ce qu'il ne faut PAS
-# faire" de CC-V4-05. Les questions absentes de ce dict (A.4.1, B.2.1,
-# B.2.3) n'ont simplement pas de cas annoté encore disponible.
+# faire" de CC-V4-05. Les questions absentes de ce dict n'ont simplement
+# pas de cas annoté disponible pour leur sujet précis.
+#
+# RECONSTRUIT EN ENTIER POUR CC-V4-11 (BLOC A + BLOC B) : les 12 codes de
+# grid_questions.py ont changé (Maquette Vierge). Chaque exemple existant
+# a été replacé sous le code dont le SUJET correspond réellement,
+# jamais laissé sous son ancien code par défaut :
+#   - A.1.1 (nouveau, fusion "blocage physique OU grève") reçoit les
+#     exemples de l'ancien A.1.1 (grève) ET de l'ancien A.1.3 (blocage
+#     communautaire, piège de polarité).
+#   - A.1.2 (actions en justice suspensives) reçoit les exemples de
+#     l'ancien A.2.1 (recours juridique).
+#   - A.2.1 (suspension/annulation de permis) reçoit les exemples de
+#     l'ancien A.3.1 (permis/conformité administrative).
+#   - B.1.1 (perte de subsistance sans compensation) garde ses propres
+#     exemples + le nouveau cas CBG legacy grievances (BLOC B point 2).
+#   - B.2.1 (Air/PM10) reçoit l'exemple de poussières/filtres CBG (déjà
+#     un sujet Air/particules dans l'ancien B.2.2) + le nouveau cas
+#     Indorama airshed/WHO limits (BLOC B point 3) : cet exemple est un
+#     constat de qualité de l'AIR, donc placé sous B.2.1 (Air), PAS sous
+#     B.2.2 qui porte désormais sur l'Eau/rejet thermique — la directive
+#     CC-V4-11 le nommait "B.2.2" en supposant l'ancien découpage
+#     générique "dépassement de seuils", devenu obsolète après BLOC A.
+#   - B.3.1 (absence de données de référence baseline) reçoit l'exemple
+#     de refus de partage de données de monitoring (Mundra) — un refus
+#     de fournir des données de référence est un cas topique pour cette
+#     question, même si l'exemple d'origine portait sur le suivi
+#     écologique plutôt que socio-économique.
+#   - Sans équivalent net dans les 4 dossiers annotés pour le nouveau
+#     sujet : A.2.2 (retrait bailleur), A.3.1 (injonction d'arrêt), A.3.2
+#     (accident structurel), B.1.2 (déplacement non réinstallé — l'ancien
+#     B.1.2 portait sur le mécanisme de griefs, sujet disparu), B.2.2
+#     (rejet thermique eau), B.3.2 (suivi RSE périodique) — fallback ""
+#     dans get_prompt(), pas d'exemple inventé.
 # ============================================================================
 
 _FEW_SHOT_EXAMPLES = {
@@ -253,20 +355,15 @@ FAUX POSITIF — droit vs fait (CBG) :
 FAUX POSITIF — fin normale vs blocage (CBG) :
 « Prepare Worker Demobilization Plans for future demobilization events »
 Démobilisation planifiée, pas opposition → NON
-""",
-
-    "A.1.3": """
-=== EXEMPLES DE RÉFÉRENCE ===
 
 PIÈGE R8 — couche temporelle (Mundra/Type 3) :
-Les rapports CAO résument souvent des manifestations historiques. Vérifier TOUJOURS la couche temporelle. Un blocage cité en résumé de la période 2013-2015 NE DÉCLENCHE PAS A.1.3 sur la période 2017-2025.
+Les rapports CAO résument souvent des manifestations historiques. Vérifier TOUJOURS la couche temporelle. Un blocage cité en résumé de la période 2013-2015 NE DÉCLENCHE PAS A.1.1 sur la période 2017-2025.
 
 PIÈGE DE POLARITÉ — qui bloque qui ? :
-Si c'est le PROJET qui bloque l'accès de la communauté (routes fermées, forces de sécurité) → B.1.1, JAMAIS A.1.3.
-Si c'est la COMMUNAUTÉ qui bloque le projet → A.1.3.
+A.1.1 couvre un blocage SUBI par le projet (grève du personnel OU blocage physique par des riverains/communautés tierces). Si c'est au contraire le PROJET qui restreint l'accès de la communauté (routes fermées, forces de sécurité), ce n'est PAS un fait imputable à la communauté ou au personnel — ne pas cocher A.1.1 pour ce cas ; vérifier si un autre thème de la grille (ex. B.1.1, perte de moyens de subsistance) documente une conséquence de cette restriction.
 """,
 
-    "A.2.1": """
+    "A.1.2": """
 === EXEMPLES DE RÉFÉRENCE ===
 
 PIÈGE R10 — filtre de sujet (Mundra) :
@@ -281,16 +378,16 @@ PIÈGE — dérogation locale ≠ dérogation prêteur :
 Une dérogation obtenue d'un régulateur local ne vaut pas dérogation aux standards des prêteurs.
 """,
 
-    "A.3.1": """
+    "A.2.1": """
 === EXEMPLES DE RÉFÉRENCE ===
 
 FAUX POSITIF — permis obtenu vs projet retardé (Aysha) :
 « The ESIA has received Environmental Clearance from MoWIE... However, the project has been delayed for a significant period »
-Les mots « permit », « delayed » et « mandatory » cohabitent. MAIS : l'autorisation A ÉTÉ OBTENUE. Le retard est celui du PROJET, pas du PERMIS. → NON
+Les mots « permit », « delayed » et « mandatory » cohabitent. MAIS : l'autorisation A ÉTÉ OBTENUE, pas suspendue ni annulée. Le retard est celui du PROJET, pas du PERMIS. → NON
 
 FAUX POSITIF — écart normatif vs irrégularité administrative (CBG) :
 « gaps with the IFC Performance Standards were identified in the ESIA »
-Écart avec les standards des PRÊTEURS, pas irrégularité vis-à-vis de l'AUTORITÉ qui a approuvé l'ESIA. → NON
+Écart avec les standards des PRÊTEURS, pas suspension/annulation par l'AUTORITÉ qui a approuvé l'ESIA. → NON
 """,
 
     "B.1.1": """
@@ -306,68 +403,31 @@ Engagement PROSPECTIF = n'atténue pas un risque DÉJÀ matérialisé → ne pas
 N/A ARGUMENTÉ — exemplaire (Indorama) :
 « the Project is not expected to result in physical or economic displacement and therefore IFC Performance Standard 5 is not triggered. Land required for the Project is located within the existing Indorama Free Zone »
 N/A avec verbatim positif, norme nommée, motif donné. C'est le modèle.
+
+CONSTAT DE DUE DILIGENCE (mode INSTRUCTION, Type 1) — cas CBG :
+Document : ESRS instruction pré-closing, mine de bauxite, Afrique.
+Passage : « CBG is committed to retroactively assess legacy involuntary resettlement and to identify outstanding grievances. 31 grievances have been received, of which 24 have been addressed. »
+→ OUI. L'ESRS documente des griefs non résolus (7 sur 31) et un engagement de réévaluation rétroactive — c'est un constat de due diligence (cf. R2, mode instruction), pas une vulnérabilité théorique. Le déplacement historique non compensé est un fait documenté, même s'il n'est pas daté sur la période de suivi.
 """,
 
-    "B.1.2": """
+    "B.2.1": """
 === EXEMPLES DE RÉFÉRENCE ===
 
-OUI_PROUVEE (CBG) :
-« 24 of the 31 complaints have been processed and closed »
-Chiffré, au passé, numérateur/dénominateur → statut 3
-
-NON_FORME_INSUFFISANTE (CBG) :
-« A complaints register was opened in 2015 »
-Au passé, mais registre ≠ résultat → statut 2
-
-PIÈGE — comité villageois (Mundra) :
-Un comité consultatif villageois n'est ni accord signé, ni investissement, ni vérification tierce. Porte 2 échoue → statut 2.
-
-PIÈGE — mécanisme ignoré des bénéficiaires (Mundra) :
-« They were also unaware of the CGPL grievance redress function »
-Le dispositif EXISTE mais ses destinataires l'IGNORENT → B.1.2 = OUI.
-""",
-
-    "B.2.3": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-REJET CHRONIQUE AUTORISÉ + DOMMAGE SANITAIRE -> B.4.1 SEULEMENT (R2bis) :
-« Skin and respiratory irritation reported among residents near the plant's
-routine wastewater discharge canal, operated under the existing permit. »
-Rejet HABITUEL, AUTORISÉ (« routine », « existing permit ») — pas un
-événement accidentel. → B.2.3 = NON. Le dommage sanitaire alimente
-UNIQUEMENT B.4.1.
-
-DÉVERSEMENT ACCIDENTEL -> B.2.3 = OUI :
-« An unplanned spill of process effluent occurred on 14 March, bypassing
-the treatment system and reaching the adjacent creek. »
-Événement PONCTUEL, HORS CONTRÔLE (« unplanned », « bypassing ») → B.2.3 = OUI.
-
-FUITE ACCIDENTELLE -> B.2.3 = OUI :
-« A leak from a damaged pipeline was discovered during a routine
-inspection and repaired within 48 hours. »
-Fuite = défaillance matérielle ponctuelle, pas le fonctionnement normal
-autorisé → B.2.3 = OUI (même si réparée rapidement — la mitigation se
-juge séparément, cf. R3/R7).
-
-DOMMAGE SANITAIRE SANS ÉVÉNEMENT ACCIDENTEL -> ne pas créer B.2.3 artificiellement :
-Un dommage sanitaire documenté sans mention d'un déversement/fuite/rejet
-hors contrôle spécifique n'alimente que B.4.1. Ne pas inférer un événement
-accidentel juste parce qu'un dommage existe.
-""",
-
-    "B.2.2": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-ASYMÉTRIE RISQUE/MITIGATION — exemple canonique (CBG) :
+ASYMÉTRIE RISQUE/MITIGATION — exemple canonique (CBG, poussières/PM) :
 « The existing plant has historically generated significant quantities of fugitive dust... ALTHOUGH additional filters and scrubbers were installed on the dryer stack in recent years. »
 Filtres installés = mitigation authentique. Poussières persistantes = la mesure n'a pas produit son effet.
 → OUI_DEFAILLANTE. EVIDENCE_MESURE = filtres. EVIDENCE_DEFAILLANCE = poussières.
 
-FAUX POSITIF — dépassement état initial (Indorama) :
-« At night-time, measured LAeq exceeded the 45 dB IFC criterion at location N9 only »
-Dépassement mesuré dans le chapitre état initial, AVANT travaux. Le projet n'en est pas la cause. → NON
+CONSTAT DE DUE DILIGENCE (mode INSTRUCTION, Type 1) — état initial dégradé (Indorama) :
+Document : ESRS instruction, mine de bauxite.
+Passage : « The affected airshed at both Kamsar and Sangarédi is already degraded, with some baseline ambient air quality data already exceeding WHO limits »
+→ OUI. En mode instruction (cf. R2), un airshed documenté comme dégradé AVANT le projet est un constat de due diligence à signaler : le projet s'ajoute à une situation déjà non conforme. Ce n'est pas "le projet a pollué" mais "le contexte est déjà dégradé et le projet va l'aggraver".
 
-FAUX POSITIF — dépassement géogénique (Indorama) :
+FAUX POSITIF — dépassement état initial en mode SUIVI (Indorama) :
+« At night-time, measured LAeq exceeded the 45 dB IFC criterion at location N9 only »
+Dépassement mesuré dans le chapitre état initial, AVANT travaux, sur un document de type SUIVI (R2, mode suivi : seul un fait survenu pendant la période imputable au projet compte). Le projet n'en est pas la cause. → NON
+
+FAUX POSITIF — dépassement géogénique :
 « observed exceedances are likely attributable to natural background conditions typical of the regional geology »
 Origine naturelle, pas anthropique. → NON
 
@@ -378,38 +438,10 @@ Déclaration client « no exceedances » sans donnée jointe, contredite par l'a
     "B.3.1": """
 === EXEMPLES DE RÉFÉRENCE ===
 
-FAUX POSITIF — inventaire ≠ compensation (CBG) :
-« An intensive primate survey of 142 km of transects is currently being undertaken »
-Un inventaire est une donnée d'entrée, PAS une mesure de compensation. → NON (= risque)
-
-FAUX POSITIF — partenariat ≠ déploiement (CBG/Mundra) :
-L'annonce d'un partenariat avec une ONG de conservation ne franchit jamais la porte 2.
-
-REFUS DE MONITORING — déclencheur aggravant (Mundra/R10) :
+REFUS DE PARTAGE DE DONNÉES — déclencheur (Mundra/R10) :
 « The client later informed CRP that it was not prepared to carry out additional monitoring or share monitoring data »
-Refus EXPLICITE du client de fournir des données → déclencheur, JAMAIS mitigation.
+Refus EXPLICITE du client de fournir des données de référence → déclencheur pour l'absence de données de référence, JAMAIS mitigation.
 Sujet : le CLIENT (pas le prêteur). Verbatim de substitution supérieur à l'original (R10).
-
-N/A VALIDE — pas d'habitat critique (Indorama) :
-« the project area does not support Critical Habitat classification under IFC PS6 criteria »
-Conclusion négative documentée. ATTENTION : un bon score ne doit jamais faire disparaître une espèce CR recensée sur l'emprise → verser au champ qualifiant.
-""",
-
-    "B.4.1": """
-=== EXEMPLES DE RÉFÉRENCE ===
-
-OUI (Mundra) :
-Irritations cutanées liées à l'eau du canal de rejet de la centrale. Sujet : l'ouvrage du projet.
-
-ARTICULATION B.4.1 / B.2.2 / B.2.3 :
-- B.4.1 = dommage sur les PERSONNES
-- B.2.2 = dépassement dans le MILIEU
-- B.2.3 = événement ACCIDENTEL
-Les trois peuvent se déclencher simultanément sur des faits distincts.
-
-ALLÉGATION ≠ fait (CBG) :
-« water contamination (by used oil, fuel) and impacts to local fish »
-Allégation communautaire non confirmée par mesure → ALLÉGATION NON CONFIRMÉE (champ qualifiant), pas OUI.
 """,
 }
 
@@ -418,11 +450,12 @@ def get_prompt(question_code, context_chunks, document_type=1):
     """Assemble le prompt V4 pour une question donnée.
 
     CHOIX V4: le document_type conditionne :
+    - la règle de matérialisation (R2, CC-V4-11 : instruction vs suivi)
     - les formes de preuve admises (R11)
     - les règles temporelles (R8, Type 3 seulement)
     - la hiérarchie des sources (R9, Types 2-3 seulement)
-    Il ne change JAMAIS R1 (biais), R2 (matérialisation), R7bis (ESAP) ni
-    R10 (filtre de sujet) — universels, valables sur les 4 types.
+    Il ne change JAMAIS R1 (biais), R7bis (ESAP) ni R10 (filtre de sujet)
+    — universels, valables sur les 4 types.
 
     Retourne None si question_code est inconnu (pas d'exception — cf.
     CC-V4-05 : l'appelant est censé valider le code en amont via
@@ -433,6 +466,13 @@ def get_prompt(question_code, context_chunks, document_type=1):
         return None
 
     doc_info = grid_questions.DOCUMENT_TYPES.get(document_type, grid_questions.DOCUMENT_TYPES[1])
+
+    # R2 — matérialisation, conditionnelle au reading_mode (CC-V4-11) :
+    # cf. _MATERIALISATION_INSTRUCTION/_SUIVI, cause racine du sur-score
+    # CBG corrigée par ce BLOC B.
+    materialisation_rule = (
+        _MATERIALISATION_INSTRUCTION if doc_info["reading_mode"] == "instruction" else _MATERIALISATION_SUIVI
+    )
 
     # R5 — silence, dépend de silence_type (grid_questions.py, CC-08)
     silence_rule = _SILENCE_ETAT if question.get("silence_type") == "etat" else _SILENCE_EVENEMENT
@@ -449,8 +489,10 @@ def get_prompt(question_code, context_chunks, document_type=1):
     # Few-shot — cf. _FEW_SHOT_EXAMPLES, "" si aucun cas annoté pour ce code
     few_shot = _FEW_SHOT_EXAMPLES.get(question_code, "")
 
-    # R2bis — articulation B.2.3/B.4.1 (correction V4) : uniquement pour ces
-    # deux questions, cf. docstring de _ARTICULATION_B23_B41.
+    # R2bis — articulation B.2.3/B.4.1 (correction V4) : CODE MORT DORMANT
+    # depuis CC-V4-11, cf. docstring de _ARTICULATION_B23_B41 — ces codes
+    # n'existent plus dans grid_questions.py, la condition ne matche donc
+    # plus jamais.
     articulation = _ARTICULATION_B23_B41 if question_code in ("B.2.3", "B.4.1") else ""
 
     context = "\n---\n".join(context_chunks) if context_chunks else "(aucun passage fourni)"
@@ -471,6 +513,7 @@ def get_prompt(question_code, context_chunks, document_type=1):
         reading_mode=doc_info["reading_mode"],
         question_r=question["question_r"],
         context_chunks=context,
+        materialisation_rule=materialisation_rule,
         silence_rule=silence_rule,
         proof_forms_rule=proof_rule,
         articulation_rule=articulation,

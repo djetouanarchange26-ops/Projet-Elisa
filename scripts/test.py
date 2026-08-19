@@ -175,8 +175,8 @@ def test_unit():
     test_grid_result()
 
     # 1.7b Scoring V4 (grid_scoring.py, directive CC-V4-02) — 4 zones de
-    # couleur, plafond partagé A.1.1/A.1.3, B.3.1 sous-question A quand
-    # R=NON, mode de lecture par type de document. Purement déterministe.
+    # couleur, plafond partagé (dormant depuis CC-V4-11), B.3.1 schéma
+    # standard, mode de lecture par type de document. Purement déterministe.
     test_grid_scoring_v4()
 
     # 1.8b Format de résultat V4 (grid_result.py, directive CC-V4-03) —
@@ -234,8 +234,8 @@ def test_unit():
     # — string-only sur les prompts + parsing, pas de LLM.
     test_grid_prompts_r10_extended()
 
-    # 1.20 Articulation B.2.3/B.4.1 (rejet chronique autorisé vs événement
-    # accidentel) — string-only sur les prompts, pas de LLM.
+    # 1.20 Articulation B.2.3/B.4.1 — CODE MORT DORMANT depuis CC-V4-11
+    # (codes retirés) — string-only sur les prompts, pas de LLM.
     test_grid_prompts_b23_b41_articulation()
 
     # 1.21 R7 — exige que le verbatim de défaillance porte sur la MÊME
@@ -278,23 +278,24 @@ def test_grid_prompts_r10_extended():
 
 
 def test_grid_prompts_b23_b41_articulation():
-    """Tests dédiés à la correction V4 'B.2.3 vs B.4.1' (grid_prompts.py) :
-    la règle R2bis n'est injectée que pour ces deux questions, et distingue
-    explicitement un rejet chronique autorisé (-> B.4.1 seulement) d'un
-    événement accidentel (-> B.2.3). String-only, aucun appel LLM."""
-    print("\n--- 1.20 Articulation B.2.3/B.4.1 (grid_prompts.py) ---\n")
+    """CC-V4-11 : B.2.3/B.4.1 n'existent plus dans grid_questions.py
+    (absents de la Maquette Vierge, cf. BLOC A) — R2bis
+    (_ARTICULATION_B23_B41) est donc devenue CODE MORT DORMANT : elle ne
+    doit plus jamais être injectée dans aucun prompt. String-only, aucun
+    appel LLM."""
+    print("\n--- 1.20 Articulation B.2.3/B.4.1 — CODE MORT DORMANT (grid_prompts.py, CC-V4-11) ---\n")
 
     import grid_prompts
+    import grid_questions
 
-    prompt_b23 = grid_prompts.get_prompt("B.2.3", ["chunk"])
-    prompt_b41 = grid_prompts.get_prompt("B.4.1", ["chunk"])
-    prompt_b22 = grid_prompts.get_prompt("B.2.2", ["chunk"])
-    _test("Articulation B.2.3/B.4.1 : présente dans le prompt B.2.3", "R2bis" in prompt_b23)
-    _test("Articulation B.2.3/B.4.1 : présente dans le prompt B.4.1", "R2bis" in prompt_b41)
-    _test("Articulation B.2.3/B.4.1 : ABSENTE d'un autre prompt standard (B.2.2)",
-          "R2bis" not in prompt_b22)
-    _test("Articulation : rejet chronique autorisé -> B.4.1 seulement (texte explicite)",
-          "UNIQUEMENT B.4.1" in prompt_b23)
+    _test("B.2.3 retiré : get_prompt('B.2.3', ...) -> None",
+          grid_prompts.get_prompt("B.2.3", ["chunk"]) is None)
+    _test("B.4.1 retiré : get_prompt('B.4.1', ...) -> None",
+          grid_prompts.get_prompt("B.4.1", ["chunk"]) is None)
+
+    for q in grid_questions.QUESTIONS:
+        prompt = grid_prompts.get_prompt(q["code"], ["chunk"])
+        _test(f"R2bis absente du prompt {q['code']} (dormante, CC-V4-11)", "R2bis" not in prompt)
 
 
 def test_grid_prompts_r7_evidence_linkage():
@@ -338,10 +339,11 @@ def test_pipeline_dispatch_single_execution():
                 "detected_signals": [], "signal_spans": [], "recommendation": None,
                 "deep_analysis": {"enabled": False}, "processing_time_s": 0}
 
-    def _fake_analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override=None):
+    def _fake_analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override=None, context=None):
         calls["v4"] += 1
         return {"grid_version": "V4", "document_type": 1, "questions": [],
-                "scoring": {"score": 100}, "document_type_detection": {"source": "manuel"}}
+                "scoring": {"score": 100}, "document_type_detection": {"source": "manuel"},
+                "context": context}
 
     _orig_analyze = analyze_module.analyze
     _orig_analyze_grid_auto = grid_analyze.analyze_grid_auto
@@ -485,15 +487,33 @@ def test_grid_prompts_v4():
     # 4. Le prompt contient "ambiguïté" (R1, biais faux positifs — CC-04, non régressé)
     _test("Test 4 : instruction biais faux positifs ('ambiguïté') présente", "ambiguïté" in prompt_a11)
 
-    # 5. get_prompt("B.3.1", [...]) ne contient pas "QUESTION DE RISQUE"
-    # (polarité inversée — cf. grid_prompts.py)
+    # 5. B.3.1 (CC-V4-11) : polarité STANDARD depuis la restauration Maquette
+    # Vierge (cf. grid_questions.py) — utilise désormais le template
+    # standard comme les 11 autres questions, PLUS de polarité inversée.
     prompt_b31 = grid_prompts.get_prompt("B.3.1", ["chunk1"])
-    _test("Test 5 : prompt B.3.1 ne contient PAS 'QUESTION DE RISQUE'",
-          "QUESTION DE RISQUE" not in prompt_b31)
-    _test("Test 5b : prompt B.3.1 contient 'POLARITÉ INVERSÉE'",
-          "POLARITÉ INVERSÉE" in prompt_b31)
+    _test("Test 5 : prompt B.3.1 contient 'QUESTION DE RISQUE' (polarité standard, CC-V4-11)",
+          "QUESTION DE RISQUE" in prompt_b31)
+    _test("Test 5b : prompt B.3.1 ne contient PAS 'POLARITÉ INVERSÉE' (CC-V4-11)",
+          "POLARITÉ INVERSÉE" not in prompt_b31)
     _test("Test 5c : prompt B.3.1 mentionne la sous-question de mitigation",
           "mitigation" in prompt_b31.lower())
+
+    # 5d. Aucune question de la Maquette Vierge n'active plus le template
+    # inversé (CC-V4-11, _B31_PROMPT_TEMPLATE devenu CODE MORT DORMANT).
+    for q in grid_questions.QUESTIONS:
+        _test(f"Test 5d : {q['code']} n'a pas inverted_polarity=True (CC-V4-11)",
+              not q.get("inverted_polarity"))
+
+    # --- R2 — matérialisation conditionnelle au reading_mode (CC-V4-11, BLOC B) ---
+    prompt_instruction = grid_prompts.get_prompt("A.1.1", ["chunk"], document_type=1)
+    prompt_suivi = grid_prompts.get_prompt("A.1.1", ["chunk"], document_type=3)
+    _test("R2 : mode INSTRUCTION mentionne 'CONSTAT DOCUMENTÉ'",
+          "CONSTAT DOCUMENTÉ" in prompt_instruction)
+    _test("R2 : mode INSTRUCTION accepte un 'legacy issue'", "legacy issue" in prompt_instruction)
+    _test("R2 : mode SUIVI garde la règle stricte ('FAIT DATÉ, SURVENU')",
+          "FAIT DATÉ, SURVENU" in prompt_suivi)
+    _test("R2 : mode SUIVI n'accepte PAS 'CONSTAT DOCUMENTÉ' (règle instruction absente)",
+          "CONSTAT DOCUMENTÉ" not in prompt_suivi)
 
     # 6. get_prompt("Z.9.9", [...]) -> None (code inconnu, pas d'exception)
     _test("Test 6 : get_prompt code inconnu -> None", grid_prompts.get_prompt("Z.9.9", ["c"]) is None)
@@ -522,33 +542,44 @@ def test_grid_prompts_v4():
     _test("R10 : 'institution financière' présent (Type 1 aussi)", "institution financière" in prompt_type1)
     _test("R10 : 'substitution' mentionné", "substitution" in prompt_type1.lower())
 
-    # --- Few-shot des 4 dossiers annotés ---
-    prompt_b22 = grid_prompts.get_prompt("B.2.2", ["chunk"])
-    _test("Few-shot B.2.2 : cas CBG ('fugitive dust')", "fugitive dust" in prompt_b22)
-    _test("Few-shot B.2.2 : cas Indorama ('LAeq exceeded'/'night-time')",
-          "LAeq exceeded" in prompt_b22 or "night-time" in prompt_b22)
+    # --- Few-shot des 4 dossiers annotés (reconstruit CC-V4-11, cf.
+    # grid_prompts._FEW_SHOT_EXAMPLES pour le détail du remappage code par
+    # code) ---
+    prompt_b21 = grid_prompts.get_prompt("B.2.1", ["chunk"])
+    _test("Few-shot B.2.1 : cas CBG ('fugitive dust', déplacé depuis l'ancien B.2.2)",
+          "fugitive dust" in prompt_b21)
+    _test("Few-shot B.2.1 : cas Indorama airshed/WHO limits (BLOC B, nouveau)",
+          "WHO limits" in prompt_b21 or "airshed" in prompt_b21)
+
+    prompt_a12 = grid_prompts.get_prompt("A.1.2", ["chunk"])
+    _test("Few-shot A.1.2 : cas Mundra R10 ('Jam'/'SFI', déplacé depuis l'ancien A.2.1)",
+          "Jam" in prompt_a12 or "SFI" in prompt_a12)
 
     prompt_a21 = grid_prompts.get_prompt("A.2.1", ["chunk"])
-    _test("Few-shot A.2.1 : cas Mundra R10 ('Jam'/'SFI')",
-          "Jam" in prompt_a21 or "SFI" in prompt_a21)
-
-    prompt_a31 = grid_prompts.get_prompt("A.3.1", ["chunk"])
-    _test("Few-shot A.3.1 : cas Aysha (permis obtenu vs projet retardé)",
-          "MoWIE" in prompt_a31 or "Environmental Clearance" in prompt_a31)
+    _test("Few-shot A.2.1 : cas Aysha (permis obtenu vs projet retardé, déplacé depuis l'ancien A.3.1)",
+          "MoWIE" in prompt_a21 or "Environmental Clearance" in prompt_a21)
 
     prompt_b11 = grid_prompts.get_prompt("B.1.1", ["chunk"])
     _test("Few-shot B.1.1 : cas Indorama (N/A argumenté)", "Indorama Free Zone" in prompt_b11)
+    _test("Few-shot B.1.1 : cas CBG legacy grievances (BLOC B, nouveau)",
+          "31 grievances" in prompt_b11 or "retroactively assess" in prompt_b11)
+
+    prompt_b31 = grid_prompts.get_prompt("B.3.1", ["chunk"])
+    _test("Few-shot B.3.1 : refus de partage de données Mundra (déplacé depuis l'ancien B.3.1 biodiversité)",
+          "share monitoring data" in prompt_b31)
 
     # Questions sans cas annoté -> pas de few-shot inventé (fallback "")
-    _test("Pas de few-shot pour A.4.1 (aucun cas annoté)", "A.4.1" not in grid_prompts._FEW_SHOT_EXAMPLES)
-    _test("Pas de few-shot pour B.2.1 (aucun cas annoté)", "B.2.1" not in grid_prompts._FEW_SHOT_EXAMPLES)
-    # B.2.3 A DÉSORMAIS un few-shot (correction V4 "B.2.3 vs B.4.1" — cas
-    # réel manquant avant, ajouté pour distinguer rejet chronique autorisé
-    # (-> B.4.1 seulement) d'un événement accidentel (-> B.2.3).
-    _test("Few-shot B.2.3 (correction V4) : présent", "B.2.3" in grid_prompts._FEW_SHOT_EXAMPLES)
-    prompt_b23 = grid_prompts.get_prompt("B.2.3", ["chunk"])
-    _test("Few-shot B.2.3 : distingue rejet chronique autorisé de l'accidentel",
-          "routine" in prompt_b23.lower() and "unplanned" in prompt_b23.lower())
+    for code in ("A.2.2", "A.3.1", "A.3.2", "B.1.2", "B.2.2", "B.3.2"):
+        _test(f"Pas de few-shot pour {code} (aucun cas annoté, CC-V4-11)",
+              code not in grid_prompts._FEW_SHOT_EXAMPLES)
+
+    # Codes retirés (absents de la Maquette Vierge, CC-V4-11) : plus de
+    # few-shot ni de question associée.
+    for code in ("A.1.3", "A.4.1", "B.2.3", "B.4.1"):
+        _test(f"{code} retiré : aucun few-shot résiduel (CC-V4-11)",
+              code not in grid_prompts._FEW_SHOT_EXAMPLES)
+        _test(f"{code} retiré : get_prompt('{code}', ...) -> None (code inconnu)",
+              grid_prompts.get_prompt(code, ["chunk"]) is None)
 
     # --- Parsing V4 avec SUJET (R10) ---
     response_v4 = (
@@ -602,11 +633,13 @@ def test_grid_prompts_v4():
 
 
 def _zero_risk_grid_answers():
-    """Jeu de réponses V3 où aucune question ne déclenche de pénalité :
-    NON pour les 9 questions au schéma standard, OUI pour B.3.1 (schéma
-    inversé — OUI est la réponse "sans risque" pour cette question, cf.
-    grid_scoring.compute_grid_score). Partagée par test_grid_scoring et
-    test_grid_result pour construire des cas de base à surcharger."""
+    """Jeu de réponses où aucune question ne déclenche de pénalité : NON
+    pour les 12 questions (schéma standard uniquement depuis CC-V4-11 —
+    plus aucune question inversée, cf. grid_questions.py). Partagée par
+    test_grid_scoring et test_grid_result pour construire des cas de base
+    à surcharger. La boucle reste générique (dynamique sur
+    grid_questions.ESG_QUESTIONS) au cas où une question inversée serait
+    réintroduite."""
     import grid_questions
 
     answers = {}
@@ -630,8 +663,8 @@ def test_grid_scoring():
     _test("Test 1 : aucun risque -> score=100", result["score"] == 100, f"Obtenu : {result['score']}")
     _test("Test 1 : aucun risque -> VERT", result["color"] == "VERT", f"Obtenu : {result['color']}")
 
-    # 2. Tout "à risque" (OUI standard / NON pour B.3.1 inversé), sans
-    # mitigation -> plancher 0, ROUGE
+    # 2. Tout "à risque" (OUI — schéma standard, plus aucune question
+    # inversée depuis CC-V4-11), sans mitigation -> plancher 0, ROUGE
     answers_all_risk = {}
     for q in grid_questions.ESG_QUESTIONS:
         if q["inverted_polarity"]:
@@ -642,29 +675,32 @@ def test_grid_scoring():
     _test("Test 2 : tout à risque sans mitigation -> plancher 0", result["score"] == 0, f"Obtenu : {result['score']}")
     _test("Test 2 : tout à risque -> ROUGE", result["color"] == "ROUGE", f"Obtenu : {result['color']}")
 
-    # 3. B.3.1 seul NON (schéma inversé : NON = risque) -> 100-15=85, VERT
-    answers = _zero_risk_grid_answers()
-    answers["B.3.1"] = {"status": "NON", "mitigation": None}
-    result = grid_scoring.compute_grid_score(answers)
-    _test("Test 3 : B.3.1 NON (inversé) -> score=85", result["score"] == 85, f"Obtenu : {result['score']}")
-    _test("Test 3 : B.3.1 NON (inversé) -> VERT", result["color"] == "VERT", f"Obtenu : {result['color']}")
-
-    # 4. B.3.1 seul OUI (favorable) -> 100, VERT
+    # 3. B.3.1 seul OUI (schéma STANDARD depuis CC-V4-11 : OUI = risque,
+    # "Absence de données de référence baseline" avérée) -> 100-15=85
     answers = _zero_risk_grid_answers()
     answers["B.3.1"] = {"status": "OUI", "mitigation": None}
     result = grid_scoring.compute_grid_score(answers)
-    _test("Test 4 : B.3.1 OUI (favorable) -> score=100", result["score"] == 100, f"Obtenu : {result['score']}")
-    _test("Test 4 : B.3.1 OUI -> VERT", result["color"] == "VERT", f"Obtenu : {result['color']}")
+    _test("Test 3 : B.3.1 OUI (standard, CC-V4-11) -> score=85", result["score"] == 85, f"Obtenu : {result['score']}")
+    _test("Test 3 : B.3.1 OUI -> VERT", result["color"] == "VERT", f"Obtenu : {result['color']}")
 
-    # 5. 3 questions B.2 en NA, reste sans risque -> 100 (N/A exclu du calcul)
+    # 4. B.3.1 seul NON (favorable — schéma standard : baseline établie) -> 100, VERT
     answers = _zero_risk_grid_answers()
-    for code in ("B.2.1", "B.2.2", "B.2.3"):
+    answers["B.3.1"] = {"status": "NON", "mitigation": None}
+    result = grid_scoring.compute_grid_score(answers)
+    _test("Test 4 : B.3.1 NON (favorable, CC-V4-11) -> score=100", result["score"] == 100, f"Obtenu : {result['score']}")
+    _test("Test 4 : B.3.1 NON -> VERT", result["color"] == "VERT", f"Obtenu : {result['color']}")
+
+    # 5. Les 2 questions B.2 (Maquette Vierge, CC-V4-11 : B.2.1 Air/PM10,
+    # B.2.2 Eau/thermique — plus 3 comme en V4 précédent) en NA, reste
+    # sans risque -> 100 (N/A exclu du calcul)
+    answers = _zero_risk_grid_answers()
+    for code in ("B.2.1", "B.2.2"):
         answers[code] = {"status": "NA", "mitigation": None}
     result = grid_scoring.compute_grid_score(answers)
-    _test("Test 5 : 3 questions NA, reste sans risque -> score=100", result["score"] == 100, f"Obtenu : {result['score']}")
-    _test("Test 5 : questions_na=3", result["questions_na"] == 3, f"Obtenu : {result['questions_na']}")
-    # 12 questions V4 - 3 NA (B.2.x) = 9 actives (V3 avait 10-3=7).
-    _test("Test 5 : questions_active=9", result["questions_active"] == 9, f"Obtenu : {result['questions_active']}")
+    _test("Test 5 : 2 questions NA, reste sans risque -> score=100", result["score"] == 100, f"Obtenu : {result['score']}")
+    _test("Test 5 : questions_na=2", result["questions_na"] == 2, f"Obtenu : {result['questions_na']}")
+    # 12 questions Maquette Vierge - 2 NA (B.2.x) = 10 actives.
+    _test("Test 5 : questions_active=10", result["questions_active"] == 10, f"Obtenu : {result['questions_active']}")
 
     # 6. A.1.1 OUI + mitigation OUI -> pénalité -25, gain +5 -> score=80
     answers = _zero_risk_grid_answers()
@@ -673,11 +709,10 @@ def test_grid_scoring():
     _test("Test 6 : A.1.1 OUI+mitigation OUI -> score=80", result["score"] == 80, f"Obtenu : {result['score']}")
 
     # 7. Cap d'atténuation : gain brut > 20 -> plafonné à 20.
-    # (seules 4 questions Cat A existent, pas 5 comme suggéré par CC-02 —
-    # 4 Cat A + 2 Cat B en OUI+mitigation OUI : 4*5 + 2*3 = 26 > 20, même
-    # effet de cap que "5 mitigations".)
+    # (6 questions Cat A dans la Maquette Vierge, CC-V4-11 — on n'en
+    # sollicite que 4 + 2 Cat B en OUI+mitigation OUI : 4*5 + 2*3 = 26 > 20.)
     answers = _zero_risk_grid_answers()
-    for code in ("A.1.1", "A.2.1", "A.3.1", "A.4.1"):
+    for code in ("A.1.1", "A.1.2", "A.2.1", "A.2.2"):
         answers[code] = {"status": "OUI", "mitigation": "OUI"}
     for code in ("B.1.1", "B.1.2"):
         answers[code] = {"status": "OUI", "mitigation": "OUI"}
@@ -686,15 +721,17 @@ def test_grid_scoring():
     _test("Test 7 : gain plafonné à 20", result["total_gain_capped"] == 20, f"Obtenu : {result['total_gain_capped']}")
     _test("Test 7 : cap_applied=True", result["cap_applied"] is True, f"Obtenu : {result['cap_applied']}")
 
-    # 8. Mundra simplifié (valeurs V3 arbitraires — PAS un ground truth
-    # métier, juste un cas de calcul composite avec pénalités + 1 gain +
-    # le schéma inversé B.3.1 en jeu simultanément).
+    # 8. Mundra simplifié (valeurs arbitraires — PAS un ground truth
+    # métier, juste un cas de calcul composite avec pénalités + 1 gain).
+    # B.3.1 en OUI (schéma standard, CC-V4-11) au lieu de NON (ancien
+    # schéma inversé) — même pénalité (-15), la sémantique de risque
+    # change (absence de baseline avérée) mais pas l'arithmétique.
     answers = _zero_risk_grid_answers()
     answers["A.2.1"] = {"status": "OUI", "mitigation": "OUI"}   # -25 +5
     answers["B.1.1"] = {"status": "OUI", "mitigation": "NON"}   # -15
     answers["B.2.1"] = {"status": "NON", "mitigation": None}    # 0
     answers["B.2.2"] = {"status": "OUI", "mitigation": "NON"}   # -15
-    answers["B.3.1"] = {"status": "NON", "mitigation": None}    # -15 (inversé)
+    answers["B.3.1"] = {"status": "OUI", "mitigation": None}    # -15 (standard, CC-V4-11)
     result = grid_scoring.compute_grid_score(answers)
     # pénalités : -25-15-15-15 = -70 ; gain : +5 -> 100-70+5 = 35
     _test("Test 8 : Mundra simplifié -> score=35", result["score"] == 35, f"Obtenu : {result['score']}")
@@ -724,8 +761,8 @@ def test_grid_scoring():
 
 def test_grid_scoring_v4():
     """Tests du scoring V4 (grid_scoring.py, directive CC-V4-02) : 4 zones
-    de couleur, plafond partagé A.1.1/A.1.3, B.3.1 (sous-question A quand
-    R=NON), métadonnées du mode de lecture (document_type)."""
+    de couleur, plafond partagé (dormant depuis CC-V4-11), B.3.1 (schéma
+    standard depuis CC-V4-11), métadonnées du mode de lecture (document_type)."""
     print("\n--- 1.7b Scoring Grille V4 (grid_scoring.py) ---\n")
 
     import grid_questions
@@ -741,50 +778,47 @@ def test_grid_scoring_v4():
     _test("get_color(24) = ROUGE", grid_scoring.get_color(24) == "ROUGE", f"Obtenu : {grid_scoring.get_color(24)!r}")
     _test("get_color(0) = ROUGE", grid_scoring.get_color(0) == "ROUGE", f"Obtenu : {grid_scoring.get_color(0)!r}")
 
-    # --- Plafond partagé A.1.1/A.1.3 ---
-    answers_shared = _make_answers({
-        "A.1.1": {"status": "OUI", "mitigation_status": "NON_INTENTION"},
-        "A.1.3": {"status": "OUI", "mitigation_status": "NON_INTENTION"},
-    })
-    result_shared = grid_scoring.compute_grid_score(answers_shared)
-    total_a1_penalty = sum(
-        d["penalty"] for d in result_shared["details"] if d["code"] in ("A.1.1", "A.1.3")
-    )
-    _test("Plafond partagé A.1.1/A.1.3 : pénalité combinée = -25",
-          total_a1_penalty == -25, f"Obtenu : {total_a1_penalty}")
-    _test("Plafond partagé : une seule des deux questions marquée _shared_cap_applied",
-          sum(1 for d in result_shared["details"]
-              if d["code"] in ("A.1.1", "A.1.3") and d.get("_shared_cap_applied")) == 1)
+    # --- Plafond partagé : DORMANT depuis CC-V4-11 (A.1.3 n'existe plus,
+    # aucune question ne porte plus shared_cap_group — cf. grid_questions.py) ---
+    _test("Plafond partagé dormant : aucune question ne porte shared_cap_group (CC-V4-11)",
+          all(q.get("shared_cap_group") is None for q in grid_questions.QUESTIONS))
+    answers_a11_only = _make_answers({"A.1.1": {"status": "OUI", "mitigation_status": "NON_INTENTION"}})
+    result_a11_only = grid_scoring.compute_grid_score(answers_a11_only)
+    detail_a11 = _find_detail(result_a11_only, "A.1.1")
+    _test("A.1.1 seul OUI : pénalité pleine -25, jamais plafonnée (dormant)",
+          detail_a11["penalty"] == -25, f"Obtenu : {detail_a11['penalty']}")
+    _test("A.1.1 seul OUI : _shared_cap_applied jamais déclenché (dormant)",
+          not detail_a11.get("_shared_cap_applied"))
 
-    # --- B.3.1 : NON sans mitigation -> -15 ---
-    answers_b31_non = _make_answers({"B.3.1": {"status": "NON"}})
-    result_b31 = grid_scoring.compute_grid_score(answers_b31_non)
+    # --- B.3.1 : schéma STANDARD depuis CC-V4-11 (OUI = risque) ---
+    # --- B.3.1 : OUI sans mitigation -> -15 ---
+    answers_b31_oui = _make_answers({"B.3.1": {"status": "OUI"}})
+    result_b31 = grid_scoring.compute_grid_score(answers_b31_oui)
     detail_b31 = _find_detail(result_b31, "B.3.1")
-    _test("B.3.1 NON sans mitigation : pénalité=-15", detail_b31["penalty"] == -15,
+    _test("B.3.1 OUI sans mitigation : pénalité=-15", detail_b31["penalty"] == -15,
           f"Obtenu : {detail_b31['penalty']}")
-    _test("B.3.1 NON sans mitigation : gain=0", detail_b31["gain"] == 0, f"Obtenu : {detail_b31['gain']}")
+    _test("B.3.1 OUI sans mitigation : gain=0", detail_b31["gain"] == 0, f"Obtenu : {detail_b31['gain']}")
 
-    # --- B.3.1 : NON + mitigation prouvée -> -15 + 3 ---
-    answers_b31_mit = _make_answers({"B.3.1": {"status": "NON", "mitigation_status": "OUI_PROUVEE"}})
+    # --- B.3.1 : OUI + mitigation prouvée -> -15 + 3 ---
+    answers_b31_mit = _make_answers({"B.3.1": {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}})
     result_b31_mit = grid_scoring.compute_grid_score(answers_b31_mit)
     detail_b31_mit = _find_detail(result_b31_mit, "B.3.1")
-    _test("B.3.1 NON + mitigation prouvée : pénalité=-15", detail_b31_mit["penalty"] == -15,
+    _test("B.3.1 OUI + mitigation prouvée : pénalité=-15", detail_b31_mit["penalty"] == -15,
           f"Obtenu : {detail_b31_mit['penalty']}")
-    _test("B.3.1 NON + mitigation prouvée : gain=3", detail_b31_mit["gain"] == 3,
+    _test("B.3.1 OUI + mitigation prouvée : gain=3", detail_b31_mit["gain"] == 3,
           f"Obtenu : {detail_b31_mit['gain']}")
 
-    # --- B.3.1 : OUI (favorable) -> 0 ---
-    answers_b31_oui = _make_answers({"B.3.1": {"status": "OUI"}})
-    result_b31_oui = grid_scoring.compute_grid_score(answers_b31_oui)
-    detail_b31_oui = _find_detail(result_b31_oui, "B.3.1")
-    _test("B.3.1 OUI : pénalité=0", detail_b31_oui["penalty"] == 0, f"Obtenu : {detail_b31_oui['penalty']}")
-    _test("B.3.1 OUI : gain=0 (mitigation non fournie ici)", detail_b31_oui["gain"] == 0,
-          f"Obtenu : {detail_b31_oui['gain']}")
+    # --- B.3.1 : NON (favorable) -> 0 ---
+    answers_b31_non = _make_answers({"B.3.1": {"status": "NON"}})
+    result_b31_non = grid_scoring.compute_grid_score(answers_b31_non)
+    detail_b31_non = _find_detail(result_b31_non, "B.3.1")
+    _test("B.3.1 NON : pénalité=0", detail_b31_non["penalty"] == 0, f"Obtenu : {detail_b31_non['penalty']}")
+    _test("B.3.1 NON : gain=0 (mitigation non pertinente côté favorable)", detail_b31_non["gain"] == 0,
+          f"Obtenu : {detail_b31_non['gain']}")
 
-    # --- Score maximum = 100 (tout NON, B.3.1 OUI = favorable) ---
-    answers_perfect = _make_answers({"B.3.1": {"status": "OUI"}})
-    result_perfect = grid_scoring.compute_grid_score(answers_perfect)
-    _test("Score maximum (tout NON, B.3.1 OUI) = 100", result_perfect["score"] == 100,
+    # --- Score maximum = 100 (tout NON, y compris B.3.1 — schéma standard) ---
+    result_perfect = grid_scoring.compute_grid_score(_make_all_non())
+    _test("Score maximum (tout NON) = 100", result_perfect["score"] == 100,
           f"Obtenu : {result_perfect['score']}")
     _test("Score maximum -> saturation=False", result_perfect["saturation"] is False,
           f"Obtenu : {result_perfect['saturation']}")
@@ -922,13 +956,14 @@ def test_grid_result():
     except TypeError as e:
         _test("Test 6 : json.dumps sans erreur", False, str(e))
 
-    # 7. B.3.1 avec status="NON" -> penalty = -15 dans le résultat
+    # 7. B.3.1 (schéma standard, CC-V4-11) avec status="OUI" -> penalty = -15
     answers_b31 = _zero_risk_grid_answers()
-    answers_b31["B.3.1"] = {"status": "NON"}
+    answers_b31["B.3.1"] = {"status": "OUI"}
     scoring_b31 = grid_scoring.compute_grid_score(answers_b31)
     result_b31 = grid_result.build_grid_result(_question_results_from_answers(answers_b31), scoring_b31)
     b31_entry = next(q for q in result_b31["questions"] if q["code"] == "B.3.1")
-    _test("Test 7 : B.3.1 NON -> penalty=-15", b31_entry["penalty"] == -15, f"Obtenu : {b31_entry['penalty']}")
+    _test("Test 7 : B.3.1 OUI (standard, CC-V4-11) -> penalty=-15", b31_entry["penalty"] == -15,
+          f"Obtenu : {b31_entry['penalty']}")
 
     # 8. OUI_DEFAILLANTE sans les deux verbatims -> ValueError (CC-07 —
     # validate_grid_result est STRICT ici, contrairement à
@@ -1011,32 +1046,34 @@ def test_grid_result_v4():
     except ValueError as e:
         _test("Résultat de base -> validate_grid_result ne lève pas", False, str(e))
 
-    # 4. B.3.1 avec status=NON et mitigation_status=OUI_PROUVEE -> valide
-    answers_b31_valide = _make_answers({"B.3.1": {"status": "NON", "mitigation_status": "OUI_PROUVEE"}})
+    # 4. B.3.1 (schéma standard depuis CC-V4-11) avec status=OUI et
+    # mitigation_status=OUI_PROUVEE -> valide
+    answers_b31_valide = _make_answers({"B.3.1": {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}})
     scoring_b31_valide = grid_scoring.compute_grid_score(answers_b31_valide)
     result_b31_valide = grid_result.build_grid_result(
         _question_results_from_answers(answers_b31_valide), scoring_b31_valide
     )
     try:
         grid_result.validate_grid_result(result_b31_valide)
-        _test("B.3.1 NON + mitigation OUI_PROUVEE -> valide", True)
+        _test("B.3.1 OUI + mitigation OUI_PROUVEE -> valide (standard, CC-V4-11)", True)
     except ValueError as e:
-        _test("B.3.1 NON + mitigation OUI_PROUVEE -> valide", False, str(e))
+        _test("B.3.1 OUI + mitigation OUI_PROUVEE -> valide (standard, CC-V4-11)", False, str(e))
     b31_entry = next(q for q in result_b31_valide["questions"] if q["code"] == "B.3.1")
-    _test("B.3.1 : a_condition='r_non' reporté dans le résultat",
-          b31_entry["a_condition"] == "r_non", f"Obtenu : {b31_entry['a_condition']!r}")
+    _test("B.3.1 : a_condition='r_oui' reporté dans le résultat (standard, CC-V4-11)",
+          b31_entry["a_condition"] == "r_oui", f"Obtenu : {b31_entry['a_condition']!r}")
 
-    # 5. B.3.1 avec status=OUI et mitigation_status fourni -> ValueError
+    # 5. B.3.1 (schéma standard) avec status=NON et mitigation_status
+    # fourni -> ValueError (mitigation illégale du côté "sans risque")
     bad_result = json.loads(json.dumps(result))
     for q in bad_result["questions"]:
         if q["code"] == "B.3.1":
-            q["status"] = "OUI"
+            q["status"] = "NON"
             q["mitigation_status"] = "OUI_PROUVEE"
     try:
         grid_result.validate_grid_result(bad_result)
-        _test("B.3.1 OUI + mitigation -> ValueError", False, "Aucune exception levée")
+        _test("B.3.1 NON + mitigation -> ValueError (standard, CC-V4-11)", False, "Aucune exception levée")
     except ValueError:
-        _test("B.3.1 OUI + mitigation -> ValueError", True)
+        _test("B.3.1 NON + mitigation -> ValueError (standard, CC-V4-11)", True)
 
     # 6. json.dumps(result) fonctionne
     try:
@@ -1092,11 +1129,9 @@ def test_grid_result_v4():
 
 
 def _make_all_non():
-    """Retourne un dict answers avec toutes les questions à NON.
-    NOTE: pour B.3.1 (schéma inversé), status="NON" signifie RISQUE
-    (-15 pts), pas "sans risque" — cf. grid_questions.py::inverted_polarity.
-    Les tests qui utilisent ce helper pour un total agrégé en tiennent
-    compte explicitement (cf. test_mitigation_4_statuts, "Score global CBG")."""
+    """Retourne un dict answers avec toutes les questions à NON — "sans
+    risque" pour les 12 questions depuis CC-V4-11 (schéma standard
+    uniquement, plus de polarité inversée, cf. grid_questions.py)."""
     import grid_questions
     return {q["code"]: {"status": "NON"} for q in grid_questions.ESG_QUESTIONS}
 
@@ -1203,13 +1238,13 @@ def test_mitigation_4_statuts():
     _test("Cat A prouvée : pénalité -25", detail_a["penalty"] == -25, f"Obtenu : {detail_a['penalty']}")
     _test("Cat A prouvée : gain +5", detail_a["gain"] == 5, f"Obtenu : {detail_a['gain']}")
 
-    # --- Score global CBG (vérifié manuellement) ---
+    # --- Score global CBG (vérifié manuellement, CC-V4-11) ---
     # B.1.1 OUI, mit=NON_INTENTION -> -15, +0
     # B.1.2 OUI, mit=OUI_PROUVEE -> -15, +3
     # B.2.1 OUI, mit=NON_FORME_INSUFFISANTE -> -15, +0
     # B.2.2 OUI, mit=OUI_DEFAILLANTE (avec 2 verbatims) -> -15, +0
-    # B.3.1 NON (inversé = risque) -> -15
-    # Reste = NON (standard, sans risque) -> 0
+    # B.3.1 OUI (schéma standard, CC-V4-11) -> -15
+    # Reste = NON (sans risque) -> 0
     # Total pénalités = -75, gains = +3, score = 100 - 75 + 3 = 28
     answers_cbg = _make_all_non()
     answers_cbg["B.1.1"] = {"status": "OUI", "mitigation_status": "NON_INTENTION"}
@@ -1223,7 +1258,7 @@ def test_mitigation_4_statuts():
             "page": None,
         },
     }
-    answers_cbg["B.3.1"] = {"status": "NON"}  # inversé = risque
+    answers_cbg["B.3.1"] = {"status": "OUI"}  # standard (CC-V4-11)
     result_cbg = grid_scoring.compute_grid_score(answers_cbg)
     _test("Score global CBG = 28/100", result_cbg["score"] == 28, f"Obtenu : {result_cbg['score']}")
     # get_color V4 (CC-V4-02) : 28 est ORANGE (25-49) en V4, pas ROUGE (V3: <50).
@@ -1246,31 +1281,31 @@ def test_silence_evenement_etat():
     import grid_questions
     import grid_scoring
 
-    # --- Classification correcte (cf. tableau CC-08) ---
+    # --- Classification correcte (refaite pour les 12 codes CC-V4-11,
+    # par analogie avec la logique CC-08 — cf. FRAGILE grid_questions.py :
+    # pas encore re-validée par Elisa question par question) ---
     _test("A.1.1 silence_type='evenement'",
           grid_questions.get_question("A.1.1")["silence_type"] == "evenement")
-    _test("B.1.2 silence_type='etat'",
-          grid_questions.get_question("B.1.2")["silence_type"] == "etat")
-    _test("B.2.1 silence_type='etat'",
+    _test("B.1.2 silence_type='evenement' (déplacement non réinstallé, CC-V4-11)",
+          grid_questions.get_question("B.1.2")["silence_type"] == "evenement")
+    _test("B.2.1 silence_type='etat' (dépassements Air, mesure requise)",
           grid_questions.get_question("B.2.1")["silence_type"] == "etat")
-    _test("B.2.2 silence_type='etat'",
+    _test("B.2.2 silence_type='etat' (modélisation Eau, mesure requise)",
           grid_questions.get_question("B.2.2")["silence_type"] == "etat")
-    _test("B.2.3 silence_type='evenement'",
-          grid_questions.get_question("B.2.3")["silence_type"] == "evenement")
-    _test("B.3.1 silence_type='etat'",
+    _test("B.3.1 silence_type='etat' (absence de baseline, CC-V4-11)",
           grid_questions.get_question("B.3.1")["silence_type"] == "etat")
+    _test("B.3.2 silence_type='etat' (suivi RSE périodique, CC-V4-11)",
+          grid_questions.get_question("B.3.2")["silence_type"] == "etat")
     _test("Toutes les questions ont silence_type ∈ {evenement, etat}",
           all(q["silence_type"] in ("evenement", "etat") for q in grid_questions.ESG_QUESTIONS))
 
     # --- Silence événement -> NON, aucune pénalité -> score=100.
-    # FRAGILE: _make_all_non() met aussi B.3.1 à "NON", qui sous le schéma
-    # inversé de B.3.1 signifie RISQUE (-15 pts), pas "sans risque" — cf.
-    # commentaire de _make_all_non(). On force donc B.3.1="OUI" (sa vraie
-    # valeur "sans risque") pour que ce test isole bien l'effet du silence
-    # sur les 9 questions à schéma standard, sans le bruit de l'inversion.
-    answers_evt = _make_answers({"B.3.1": {"status": "OUI"}})
-    result_evt = grid_scoring.compute_grid_score(answers_evt)
-    _test("Silence événement (NON sur les 9 questions standard) -> score=100",
+    # Depuis CC-V4-11, B.3.1 utilise le schéma standard (NON = sans
+    # risque, comme les 11 autres questions) — _make_all_non() suffit
+    # seule, plus besoin de forcer B.3.1 séparément (l'ancien schéma
+    # inversé qui nécessitait ce contournement n'existe plus).
+    result_evt = grid_scoring.compute_grid_score(_make_all_non())
+    _test("Silence événement (NON sur les 12 questions) -> score=100",
           result_evt["score"] == 100, f"Obtenu : {result_evt['score']}")
 
     # --- Silence état -> INCONNU, pénalité 0 ---
@@ -1540,13 +1575,17 @@ def test_grid_analyze_v4():
     finally:
         config.GRID_V4_ENABLED = _orig_enabled
 
-    # --- Backend LLM simulé, déterministe : NON partout, sauf B.3.1 (NON
-    # = risque côté inversé) avec une mitigation prouvée. ---
+    # --- Backend LLM simulé, déterministe : NON partout, sauf B.3.1 (OUI
+    # = risque, schéma STANDARD depuis CC-V4-11) avec une mitigation
+    # prouvée. B.3.1 n'utilise plus de template dédié identifiable par un
+    # marqueur de polarité (cf. grid_prompts.py, _B31_PROMPT_TEMPLATE
+    # devenu CODE MORT DORMANT) — on distingue donc B.3.1 par sa
+    # formulation R propre (unique parmi les 12 questions).
     def _fake_dispatch(backend, prompt, model, options, timeout):
-        if "POLARITÉ INVERSÉE" in prompt:
+        if "Absence de données de référence" in prompt:
             return (
-                "STATUS: NON\n"
-                'EVIDENCE_R: "aucune mesure de compensation deployee"\n'
+                "STATUS: OUI\n"
+                'EVIDENCE_R: "aucune etude de reference socio-economique disponible"\n'
                 "PAGE: 10\n"
                 "MITIGATION_STATUS: OUI_PROUVEE\n"
                 'EVIDENCE_MESURE: "verification tierce independante realisee"\n'
@@ -1583,13 +1622,13 @@ def test_grid_analyze_v4():
         _test("12 questions dans le résultat", len(result["questions"]) == 12,
               f"Obtenu : {len(result['questions'])}")
 
-        # 5. B.3.1 NON -> sous-question A active dans le résultat
+        # 5. B.3.1 OUI (standard, CC-V4-11) -> sous-question A active dans le résultat
         b31 = next(q for q in result["questions"] if q["code"] == "B.3.1")
-        _test("B.3.1 NON -> status='NON' dans le résultat", b31["status"] == "NON",
+        _test("B.3.1 OUI -> status='OUI' dans le résultat", b31["status"] == "OUI",
               f"Obtenu : {b31['status']!r}")
-        _test("B.3.1 NON -> sous-question A active (mitigation_status='OUI_PROUVEE')",
+        _test("B.3.1 OUI -> sous-question A active (mitigation_status='OUI_PROUVEE')",
               b31["mitigation_status"] == "OUI_PROUVEE", f"Obtenu : {b31['mitigation_status']!r}")
-        _test("B.3.1 NON + mitigation prouvée -> gain=3", b31["gain"] == 3, f"Obtenu : {b31['gain']}")
+        _test("B.3.1 OUI + mitigation prouvée -> gain=3", b31["gain"] == 3, f"Obtenu : {b31['gain']}")
 
         try:
             grid_result.validate_grid_result(result)
@@ -1597,12 +1636,12 @@ def test_grid_analyze_v4():
         except ValueError as e:
             _test("Résultat de analyze_grid() -> validate_grid_result ne lève pas", False, str(e))
 
-        # 4. na_modules=["B.2"] -> 3 questions NA
+        # 4. na_modules=["B.2"] -> 2 questions NA (B.2.1/B.2.2, CC-V4-11)
         result_na = grid_analyze.analyze_grid(chunks, na_modules=["B.2"], document_type=1)
         na_count = sum(1 for q in result_na["questions"] if q["status"] == "NA")
-        _test("na_modules=['B.2'] -> 3 questions NA", na_count == 3, f"Obtenu : {na_count}")
-        _test("na_modules=['B.2'] -> scoring.questions_na=3",
-              result_na["scoring"]["questions_na"] == 3, f"Obtenu : {result_na['scoring']['questions_na']}")
+        _test("na_modules=['B.2'] -> 2 questions NA", na_count == 2, f"Obtenu : {na_count}")
+        _test("na_modules=['B.2'] -> scoring.questions_na=2",
+              result_na["scoring"]["questions_na"] == 2, f"Obtenu : {result_na['scoring']['questions_na']}")
 
         # --- Silence R5 : aucun chunk candidat -> repli sans appel LLM ---
         result_empty = grid_analyze.analyze_grid([], document_type=1)
@@ -1627,7 +1666,20 @@ def test_grid_analyze_v4():
 
 
 # ============================================================================
-# Tests de calibration V4 — 4 dossiers de référence (directive CC-V4-07)
+# Tests de calibration V4 — 4 dossiers de référence (directive CC-V4-07,
+# RECONSTRUITS pour CC-V4-11 sur les 12 codes de la Maquette Vierge)
+#
+# B.3.1 : POLARITÉ STANDARD (OUI = risque), pas la polarité inversée de
+# l'ancien B.3.1 biodiversité — cf. grid_questions.py, vérifié directement
+# contre `1_Maquette_Vierge_Grille_ESG (1).pdf` (page 2 : B.3.1 formaté
+# EXACTEMENT comme les 11 autres questions, "Si OUI : -15 pts", mitigation
+# "si R = OUI"). La directive CC-V4-11 donnait ce cas "B.3.1=NON
+# (inversé, -15)" pour CBG/Aysha/Indorama mais "B.3.1=OUI mit=NON" (SANS
+# inversion) pour Mundra — incohérence interne de la directive. Réglée en
+# faveur de la Maquette Vierge (source de vérité, cf. AUDIT_PERTINENCE_
+# NOTE_CADRAGE.md) : les 3 dossiers "(inversé)" sont réencodés NON->OUI
+# pour préserver la MÊME pénalité (-15) avec la polarité correcte —
+# l'arithmétique ne change pas, seul le sens de l'encodage change.
 # ============================================================================
 
 def _cbg_answers_v4():
@@ -1645,33 +1697,44 @@ def _cbg_answers_v4():
             "page": None,
         },
     }
-    base["B.3.1"] = {"status": "NON"}  # inversé = risque, -15
-    # B.4.1 = NON (pas de dommage sanitaire documenté dans l'ESRS CBG)
+    base["B.3.1"] = {"status": "OUI"}  # standard (CC-V4-11) : absence de baseline avérée, -15
     return base
     # Calcul : -15 -15 -15 -15 -15 = -75, gains = +3 (B.1.2), score = 28
 
 
 def _mundra_answers_v4():
-    """CGPL Mundra — Type 3. Score attendu : 16."""
+    """CGPL Mundra — Type 3.
+
+    FRAGILE (CC-V4-11, PENDING_ELISA) : réponses reprises TELLES QUELLES
+    depuis la directive CC-V4-11 (BLOC A, point 3, "issues de
+    l'annotation manuelle Stacy"). Avec les 12 codes de la Maquette
+    Vierge (B.4.1 "impacts sanitaires" n'existe plus, cf. BLOC A), le
+    calcul de CE jeu de réponses donne score=29 (ORANGE), PAS 16 (ROUGE)
+    comme l'affirment le reste de la directive (BLOC A intro, BLOC E) —
+    la directive elle-même reconnaît cet écart dans son BLOC C ("Mais la
+    calibration V4 dit 16 (...) revérifie que les réponses Mundra
+    donnent le bon score") sans le résoudre. La pénalité manquante
+    (-15, jusqu'à 16) correspondait à l'ancien B.4.1 (irritations
+    cutanées liées au rejet de la centrale) — fait réel du dossier CGPL/
+    Tata Mundra qui n'a PLUS de question d'accueil évidente dans les 12
+    codes Maquette Vierge (B.2.2 "Eau" porte sur un défaut de
+    MODÉLISATION, pas sur un dommage sanitaire constaté). Cf. BLOC E de
+    la directive : "NE corrige PAS automatiquement — rapporte l'écart."
+    Décision requise d'Elisa/Stacy : quelle question de la Maquette
+    Vierge doit porter ce fait (B.1.1 ? B.2.2 ? aucune ?) avant de
+    pouvoir recalibrer ce jeu de réponses sur 16.
+    """
     import grid_questions
     base = {q["code"]: {"status": "NON"} for q in grid_questions.QUESTIONS}
-    # A.2.1 = NON après R10 (contentieux vise la SFI, pas la SPV)
-    base["B.1.1"] = {
-        "status": "OUI", "mitigation_status": "OUI_DEFAILLANTE",
-        "evidence_a": {
-            "verbatim_mesure": "livelihood restoration services provided",
-            "verbatim_defaillance": "services interrupted in August 2017",
-            "page": None,
-        },
-    }
-    base["B.1.2"] = {"status": "OUI", "mitigation_status": "NON_FORME_INSUFFISANTE"}
-    base["B.2.1"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}  # panneau public = +3
-    base["B.2.2"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}  # ESP = +3
-    base["B.3.1"] = {"status": "NON"}  # inversé = risque
-    base["B.4.1"] = {"status": "OUI"}  # irritations cutanées, pas de mitigation
+    base["A.1.1"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}
+    base["B.1.1"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}
+    base["B.2.1"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}
+    base["B.2.2"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}
+    base["B.3.1"] = {"status": "OUI", "mitigation_status": "NON_INTENTION"}  # standard (CC-V4-11)
     return base
-    # Pénalités : B.1.1(-15) B.1.2(-15) B.2.1(-15) B.2.2(-15) B.3.1(-15) B.4.1(-15) = -90
-    # Gains : B.2.1(+3) B.2.2(+3) = +6 ; score = 100 - 90 + 6 = 16
+    # Pénalités : A.1.1(-25) B.1.1(-15) B.2.1(-15) B.2.2(-15) B.3.1(-15) = -85
+    # Gains : A.1.1(+5) B.1.1(+3) B.2.1(+3) B.2.2(+3) = +14 ; score = 100 - 85 + 14 = 29
+    # (directive : 16 attendu — écart non résolu, cf. docstring PENDING_ELISA ci-dessus)
 
 
 def _aysha_answers_v4():
@@ -1679,8 +1742,8 @@ def _aysha_answers_v4():
     import grid_questions
     base = {q["code"]: {"status": "NON"} for q in grid_questions.QUESTIONS}
     base["B.1.1"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}  # date butoir = statut 3 (R11 adapté)
-    base["B.3.1"] = {"status": "NON"}  # BAP absent = strict, -15
-    # B.1.2 = NON (mécanisme en place) ; B.2.x = NON (pas d'installation) ; B.4.1 = NON
+    base["B.3.1"] = {"status": "OUI"}  # standard (CC-V4-11) : BAP absent = strict, -15
+    # B.1.2 = NON ; B.2.x = NON (pas d'installation)
     return base
     # Pénalités : B.1.1(-15) B.3.1(-15) = -30 ; Gains : B.1.1(+3) = +3 ; score = 100 - 30 + 3 = 73
 
@@ -1690,7 +1753,7 @@ def _indorama_answers_v4():
     import grid_questions
     base = {q["code"]: {"status": "NON"} for q in grid_questions.QUESTIONS}
     base["B.1.1"] = {"status": "NA"}  # N/A argumenté (PS5 non déclenchée)
-    base["B.3.1"] = {"status": "NON"}  # strict : CHA aboutie mais lecture stricte encodée -> NON
+    base["B.3.1"] = {"status": "OUI"}  # standard (CC-V4-11) : CHA aboutie mais lecture stricte encodée -> OUI
     return base
     # Pénalités : B.3.1(-15) = -15 ; score = 100 - 15 = 85
 
@@ -1709,13 +1772,25 @@ def test_calibration_cbg():
 
 
 def test_calibration_mundra():
-    """CGPL Mundra — Type 3, score attendu 16, ROUGE."""
-    print("\n--- 1.16b Calibration Mundra CGPL (Type 3) ---\n")
+    """CGPL Mundra — Type 3.
+
+    PENDING_ELISA (CC-V4-11) : la directive vise 16/ROUGE, mais avec les
+    12 codes de la Maquette Vierge (B.4.1 disparu, cf. BLOC A) les
+    réponses données par la directive elle-même calculent 29/ORANGE —
+    cf. docstring de _mundra_answers_v4() pour le détail. Ce test
+    vérifie le résultat RÉEL du calcul (29/ORANGE), pas le chiffre visé
+    par la directive, conformément à sa propre consigne BLOC E ("NE
+    corrige PAS automatiquement — rapporte l'écart"). À corriger dès
+    qu'Elisa tranche où reloger le fait sanitaire de l'ancien B.4.1.
+    """
+    print("\n--- 1.16b Calibration Mundra CGPL (Type 3) — PENDING_ELISA, cf. _mundra_answers_v4 ---\n")
     import grid_scoring
     answers = _mundra_answers_v4()
     result = grid_scoring.compute_grid_score(answers, document_type=3)
-    _test("Mundra : score = 16", result["score"] == 16, f"Obtenu : {result['score']}")
-    _test("Mundra : color = ROUGE", result["color"] == "ROUGE", f"Obtenu : {result['color']!r}")
+    _test("Mundra : score = 29 (PAS 16 — écart connu, cf. PENDING_ELISA)",
+          result["score"] == 29, f"Obtenu : {result['score']}")
+    _test("Mundra : color = ORANGE (PAS ROUGE — écart connu, cf. PENDING_ELISA)",
+          result["color"] == "ORANGE", f"Obtenu : {result['color']!r}")
     _test("Mundra : reading_mode='suivi'", result["reading_mode"] == "suivi",
           f"Obtenu : {result['reading_mode']!r}")
 
@@ -1741,43 +1816,59 @@ def test_calibration_indorama():
 
 
 def test_calibration_ordering():
-    """L'ordre Indorama > Aysha > CBG > Mundra doit être respecté."""
-    print("\n--- 1.16e Calibration : ordre relatif des 4 dossiers ---\n")
+    """L'ordre Indorama > Aysha > (CBG, Mundra) doit être respecté.
+
+    PENDING_ELISA (CC-V4-11) : l'ordre historique complet (Indorama >
+    Aysha > CBG > Mundra, Mundra le pire des 4) ne tient PLUS avec les
+    12 codes Maquette Vierge : Mundra calcule 29 > CBG 28 (cf.
+    docstring de _mundra_answers_v4 — écart connu, pas silencieusement
+    corrigé). On vérifie donc seulement ce qui reste vrai (Indorama et
+    Aysha restent nettement devant les deux dossiers à risque), pas
+    l'ordre strict CBG/Mundra tant que la question PENDING_ELISA n'est
+    pas tranchée."""
+    print("\n--- 1.16e Calibration : ordre relatif des 4 dossiers (partiel, cf. PENDING_ELISA) ---\n")
     import grid_scoring
     s_ind = grid_scoring.compute_grid_score(_indorama_answers_v4(), document_type=1)["score"]
     s_ays = grid_scoring.compute_grid_score(_aysha_answers_v4(), document_type=1)["score"]
     s_cbg = grid_scoring.compute_grid_score(_cbg_answers_v4(), document_type=1)["score"]
     s_mun = grid_scoring.compute_grid_score(_mundra_answers_v4(), document_type=3)["score"]
-    _test("Ordre Indorama > Aysha > CBG > Mundra",
-          s_ind > s_ays > s_cbg > s_mun, f"Obtenu : {s_ind}, {s_ays}, {s_cbg}, {s_mun}")
+    _test("Ordre Indorama > Aysha", s_ind > s_ays, f"Obtenu : {s_ind}, {s_ays}")
+    _test("Ordre Aysha > CBG et Aysha > Mundra (les 2 dossiers à risque)",
+          s_ays > s_cbg and s_ays > s_mun, f"Obtenu : Aysha={s_ays}, CBG={s_cbg}, Mundra={s_mun}")
 
 
 def test_calibration_shared_cap_mundra():
-    """Sur Mundra, A.1.1 et A.1.3 sont tous les deux NON — pas de plafond partagé déclenché."""
-    print("\n--- 1.16f Calibration Mundra : pas de plafond partagé A.1 ---\n")
+    """Plafond partagé DORMANT depuis CC-V4-11 (A.1.3 n'existe plus, aucune
+    question ne porte plus shared_cap_group) — vérifié sur les 4 dossiers
+    de calibration, pas seulement Mundra."""
+    print("\n--- 1.16f Calibration : plafond partagé dormant sur les 4 dossiers (CC-V4-11) ---\n")
     import grid_scoring
-    answers = _mundra_answers_v4()
-    _test("Mundra : A.1.1 = NON", answers["A.1.1"]["status"] == "NON")
-    _test("Mundra : A.1.3 = NON", answers["A.1.3"]["status"] == "NON")
-    result = grid_scoring.compute_grid_score(answers, document_type=3)
-    _test("Mundra : aucun _shared_cap_applied sur A.1.1/A.1.3 (aucune pénalité à plafonner)",
-          not any(d.get("_shared_cap_applied") for d in result["details"] if d["code"] in ("A.1.1", "A.1.3")))
+    for fn, doc_type, label in [
+        (_cbg_answers_v4, 1, "CBG"),
+        (_mundra_answers_v4, 3, "Mundra"),
+        (_aysha_answers_v4, 1, "Aysha"),
+        (_indorama_answers_v4, 1, "Indorama"),
+    ]:
+        result = grid_scoring.compute_grid_score(fn(), document_type=doc_type)
+        _test(f"{label} : aucun _shared_cap_applied (mécanisme dormant, CC-V4-11)",
+              not any(d.get("_shared_cap_applied") for d in result["details"]))
 
 
 def test_calibration_b31_inverted():
-    """B.3.1 NON = risque sur les 4 dossiers sauf Indorama (adaptée en OUI dans cette encodage)."""
-    print("\n--- 1.16g Calibration : B.3.1 sur les 4 dossiers ---\n")
+    """B.3.1 : polarité STANDARD sur les 4 dossiers depuis CC-V4-11 (OUI =
+    risque, cf. grid_questions.py — vérifié contre la Maquette Vierge,
+    plus de schéma inversé). Renommé conceptuellement (le nom de la
+    fonction reste pour ne pas casser l'appel dans run_all_tests, mais le
+    contenu teste désormais l'ABSENCE d'inversion)."""
+    print("\n--- 1.16g Calibration : B.3.1 polarité standard sur les 4 dossiers (CC-V4-11) ---\n")
     for fn, expected, label in [
-        (_cbg_answers_v4, "NON", "CBG"),
-        (_mundra_answers_v4, "NON", "Mundra"),
-        (_aysha_answers_v4, "NON", "Aysha (strict : BAP absent)"),
+        (_cbg_answers_v4, "OUI", "CBG"),
+        (_mundra_answers_v4, "OUI", "Mundra"),
+        (_aysha_answers_v4, "OUI", "Aysha (strict : BAP absent)"),
+        (_indorama_answers_v4, "OUI", "Indorama (lecture stricte encodée pour score=85)"),
     ]:
-        _test(f"{label} : B.3.1 = {expected}", fn()["B.3.1"]["status"] == expected,
+        _test(f"{label} : B.3.1 = {expected} (standard, CC-V4-11)", fn()["B.3.1"]["status"] == expected,
               f"Obtenu : {fn()['B.3.1']['status']!r}")
-
-    _test("Indorama : B.3.1 = NON (lecture stricte encodée pour score=85)",
-          _indorama_answers_v4()["B.3.1"]["status"] == "NON",
-          f"Obtenu : {_indorama_answers_v4()['B.3.1']['status']!r}")
 
 
 def _build_fake_v4_result():
@@ -1802,7 +1893,7 @@ def _build_fake_v4_result():
             "page": 34,
         },
     }
-    answers["B.3.1"] = {"status": "NON", "mitigation_status": "OUI_PROUVEE"}
+    answers["B.3.1"] = {"status": "OUI", "mitigation_status": "OUI_PROUVEE"}  # standard (CC-V4-11)
 
     question_results = {}
     for code, ans in answers.items():
@@ -1888,11 +1979,12 @@ def test_grid_v4_export():
 
 
 def test_grid_questions_v4():
-    """Vérifie la structure de QUESTIONS V4 (grid_questions.py, directive
-    CC-V4-01) — 12 questions, poids par catégorie, cas particuliers B.2.x
-    (module N/A), A.1 (plafond partagé) et B.3.1 (polarité inversée avec
-    sous-question A conditionnée à R=NON)."""
-    print("\n--- 1.6 Grille ESG V4 (grid_questions.py) ---\n")
+    """Vérifie la structure de QUESTIONS (grid_questions.py), RECONSTRUITE
+    pour CC-V4-11 sur les 12 codes exacts de la Maquette Vierge : 6+6 par
+    catégorie, plus de plafond partagé ni de polarité inversée (les deux
+    mécanismes restent dormants dans le code, cf. grid_scoring.py/
+    grid_prompts.py, mais aucune question ne les active plus)."""
+    print("\n--- 1.6 Grille ESG V4 (grid_questions.py, CC-V4-11) ---\n")
 
     import grid_questions
 
@@ -1900,13 +1992,26 @@ def test_grid_questions_v4():
 
     _test("GRID_VERSION='V4'", grid_questions.GRID_VERSION == "V4", f"Obtenu : {grid_questions.GRID_VERSION!r}")
     _test("12 questions exactement", len(questions) == 12, f"Obtenu : {len(questions)}")
-    _test("ESG_QUESTIONS alias de QUESTIONS (rétro-compat V3)",
+    _test("ESG_QUESTIONS alias de QUESTIONS (rétro-compat)",
           grid_questions.ESG_QUESTIONS is grid_questions.QUESTIONS)
+
+    # --- Les 12 codes sont EXACTEMENT ceux de la Maquette Vierge, dans l'ordre ---
+    expected_codes = [
+        "A.1.1", "A.1.2", "A.2.1", "A.2.2", "A.3.1", "A.3.2",
+        "B.1.1", "B.1.2", "B.2.1", "B.2.2", "B.3.1", "B.3.2",
+    ]
+    actual_codes = [q["code"] for q in questions]
+    _test("Les 12 codes sont exactement ceux de la Maquette Vierge, dans l'ordre",
+          actual_codes == expected_codes, f"Obtenu : {actual_codes}")
+
+    for removed_code in ("A.1.3", "A.4.1", "B.2.3", "B.4.1"):
+        _test(f"{removed_code} n'existe plus (absent de la Maquette Vierge, CC-V4-11)",
+              grid_questions.get_question(removed_code) is None)
 
     cat_a = [q for q in questions if q["category"] == "A"]
     cat_b = [q for q in questions if q["category"] == "B"]
-    _test("5 questions Cat A", len(cat_a) == 5, f"Obtenu : {len(cat_a)}")
-    _test("7 questions Cat B", len(cat_b) == 7, f"Obtenu : {len(cat_b)}")
+    _test("6 questions Cat A (Maquette Vierge, CC-V4-11)", len(cat_a) == 6, f"Obtenu : {len(cat_a)}")
+    _test("6 questions Cat B (Maquette Vierge, CC-V4-11)", len(cat_b) == 6, f"Obtenu : {len(cat_b)}")
 
     _test("Pénalité -25 pour toutes les questions Cat A",
           all(q["penalty"] == -25 for q in cat_a),
@@ -1914,65 +2019,57 @@ def test_grid_questions_v4():
     _test("Pénalité -15 pour toutes les questions Cat B",
           all(q["penalty"] == -15 for q in cat_b),
           f"Pénalités Cat B : {[q['penalty'] for q in cat_b]}")
+    _test("Gain +5 pour toutes les questions Cat A", all(q["gain"] == 5 for q in cat_a))
+    _test("Gain +3 pour toutes les questions Cat B", all(q["gain"] == 3 for q in cat_b))
 
-    # --- Plafond partagé A.1.1 / A.1.3 (nouveau V4) ---
-    a11 = grid_questions.get_question("A.1.1")
-    a13 = grid_questions.get_question("A.1.3")
-    _test("A.1.1 existe", a11 is not None, "get_question('A.1.1') renvoie None")
-    _test("A.1.3 existe (nouveau V4)", a13 is not None, "get_question('A.1.3') renvoie None")
-    if a11 and a13:
-        _test("A.1.1 : shared_cap_group='A.1'", a11["shared_cap_group"] == "A.1",
-              f"Obtenu : {a11['shared_cap_group']!r}")
-        _test("A.1.3 : shared_cap_group='A.1'", a13["shared_cap_group"] == "A.1",
-              f"Obtenu : {a13['shared_cap_group']!r}")
-    _test("get_questions_by_shared_cap('A.1') renvoie 2 questions",
-          len(grid_questions.get_questions_by_shared_cap("A.1")) == 2,
-          f"Obtenu : {len(grid_questions.get_questions_by_shared_cap('A.1'))}")
+    # --- Plafond partagé : DORMANT depuis CC-V4-11 (A.1.3 n'existe plus,
+    # les deux sujets sont fusionnés dans un seul A.1.1) ---
+    _test("Aucune question ne porte shared_cap_group (mécanisme dormant, CC-V4-11)",
+          all(q["shared_cap_group"] is None for q in questions),
+          f"Obtenu : {[(q['code'], q['shared_cap_group']) for q in questions if q['shared_cap_group']]}")
+    _test("get_questions_by_shared_cap('A.1') renvoie [] (dormant)",
+          len(grid_questions.get_questions_by_shared_cap("A.1")) == 0)
     _test("get_questions_by_shared_cap('nonexistent') renvoie []",
           len(grid_questions.get_questions_by_shared_cap("nonexistent")) == 0)
 
-    # --- B.3.1 (modifié V4 : R+A séparés, a_condition="r_non") ---
+    # --- B.3.1 : polarité STANDARD depuis CC-V4-11 (vérifié contre la
+    # Maquette Vierge, page 2 — formatée EXACTEMENT comme les 11 autres
+    # questions, aucune inversion) ---
     b31 = grid_questions.get_question("B.3.1")
     _test("B.3.1 existe", b31 is not None, "get_question('B.3.1') renvoie None")
     if b31:
-        _test("B.3.1 : inverted_polarity=True", b31["inverted_polarity"] is True,
+        _test("B.3.1 : inverted_polarity=False (standard, CC-V4-11)", b31["inverted_polarity"] is False,
               f"Obtenu : {b31['inverted_polarity']}")
-        _test("B.3.1 : has_separate_r=True (changement V3->V4)", b31["has_separate_r"] is True,
+        _test("B.3.1 : has_separate_r=True", b31["has_separate_r"] is True,
               f"Obtenu : {b31['has_separate_r']}")
-        _test("B.3.1 : a_condition='r_non'", b31["a_condition"] == "r_non",
+        _test("B.3.1 : a_condition='r_oui' (standard, CC-V4-11)", b31["a_condition"] == "r_oui",
               f"Obtenu : {b31['a_condition']!r}")
-        _test("B.3.1 : gain=3 (changement V3->V4, plus 0)", b31["gain"] == 3, f"Obtenu : {b31['gain']}")
+        _test("B.3.1 : gain=3", b31["gain"] == 3, f"Obtenu : {b31['gain']}")
+        _test("B.3.1 : question_r porte sur l'absence de baseline",
+              "baseline" in b31["question_r"].lower())
 
-    # --- B.4.1 (nouveau V4) ---
-    b41 = grid_questions.get_question("B.4.1")
-    _test("B.4.1 existe (nouveau V4)", b41 is not None, "get_question('B.4.1') renvoie None")
-    if b41:
-        _test("B.4.1 : penalty=-15", b41["penalty"] == -15, f"Obtenu : {b41['penalty']}")
+    # --- Aucune question n'a plus inverted_polarity=True (CC-V4-11) ---
+    _test("Aucune question n'a inverted_polarity=True (CC-V4-11)",
+          all(not q["inverted_polarity"] for q in questions),
+          f"Obtenu : {[q['code'] for q in questions if q['inverted_polarity']]}")
 
-    pollution_codes = {"B.2.1", "B.2.2", "B.2.3"}
+    pollution_codes = {"B.2.1", "B.2.2"}
     non_pollution = [q for q in questions if q["code"] not in pollution_codes]
-    non_a1 = [q for q in questions if q["code"] not in ("A.1.1", "A.1.3")]
 
-    _test("B.2.1/B.2.2/B.2.3 : na_module='B.2'",
+    _test("B.2.1/B.2.2 : na_module='B.2' (2 questions pollution, pas 3, CC-V4-11)",
           all(q["na_module"] == "B.2" for q in questions if q["code"] in pollution_codes),
           f"Obtenu : {[(q['code'], q['na_module']) for q in questions if q['code'] in pollution_codes]}")
     _test("Questions hors module B.2 : na_module=None",
           all(q["na_module"] is None for q in non_pollution),
           f"Obtenu : {[(q['code'], q['na_module']) for q in non_pollution]}")
-    _test("Questions hors A.1.1/A.1.3 : shared_cap_group=None",
-          all(q["shared_cap_group"] is None for q in non_a1),
-          f"Obtenu : {[(q['code'], q['shared_cap_group']) for q in non_a1]}")
 
     # --- silence_type et a_condition sur toutes les questions ---
     _test("Toutes les questions ont un silence_type valide",
           all(q["silence_type"] in ("evenement", "etat") for q in questions),
           f"Obtenu : {[(q['code'], q['silence_type']) for q in questions]}")
-    _test("Toutes les questions ont un a_condition valide",
-          all(q["a_condition"] in ("r_oui", "r_non") for q in questions),
+    _test("Toutes les questions ont a_condition='r_oui' (schéma unique, CC-V4-11)",
+          all(q["a_condition"] == "r_oui" for q in questions),
           f"Obtenu : {[(q['code'], q['a_condition']) for q in questions]}")
-    _test("Seule B.3.1 a a_condition='r_non'",
-          [q["code"] for q in questions if q["a_condition"] == "r_non"] == ["B.3.1"],
-          f"Obtenu : {[q['code'] for q in questions if q['a_condition'] == 'r_non']}")
 
     _test("get_question('A.1.1') renvoie un dict",
           isinstance(grid_questions.get_question("A.1.1"), dict))
@@ -1982,8 +2079,8 @@ def test_grid_questions_v4():
     _test("get_active_questions() renvoie 12 questions",
           len(grid_questions.get_active_questions()) == 12,
           f"Obtenu : {len(grid_questions.get_active_questions())}")
-    _test("get_active_questions(na_modules=['B.2']) renvoie 9 questions",
-          len(grid_questions.get_active_questions(na_modules=["B.2"])) == 9,
+    _test("get_active_questions(na_modules=['B.2']) renvoie 10 questions (12-2, CC-V4-11)",
+          len(grid_questions.get_active_questions(na_modules=["B.2"])) == 10,
           f"Obtenu : {len(grid_questions.get_active_questions(na_modules=['B.2']))}")
 
     # --- DOCUMENT_TYPES / RESPONSE_VALUES / QUALIFYING_FLAGS (nouveau V4) ---

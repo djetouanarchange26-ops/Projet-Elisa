@@ -1,52 +1,71 @@
 """
-GRILLE ESG V4 — source de vérité (directive CC-V4-01)
+GRILLE ESG V4 — source de vérité (directive CC-V4-11, "Correctifs
+critiques Grille V4 — Soutenance 25/08", BLOC A)
 ====================================================
-Structure des 12 questions produite par Elisa (analyste métier). Les
-formulations R/A sont VERROUILLÉES — ne pas les reformuler ni les
-compléter sans validation Elisa, même pour corriger une coquille
-apparente.
+Structure des 12 questions, restaurée MOT POUR MOT depuis la Maquette
+Vierge (`1_Maquette_Vierge_Grille_ESG (1).pdf`, 3 pages, table complète
+lue et vérifiée directement contre ce fichier PDF pour CC-V4-11 — pas
+depuis une paraphrase intermédiaire). Les formulations R/A sont
+VERROUILLÉES — ne pas les reformuler ni les compléter sans validation
+Elisa, même pour corriger une coquille apparente.
 
 Ce fichier ne contient QUE la structure (data pure) : pas de logique de
 scoring, pas de prompts LLM, pas de critères d'évaluation OUI/NON. Le
-scoring et l'intégration au pipeline sont hors périmètre de CC-V4-01.
+scoring et l'intégration au pipeline sont hors périmètre de ce fichier.
 
-Catégorie A — Facteurs de Risque Majeurs / Bloqueurs (5 questions) :
-pénalité −25 pts, gain d'atténuation +5 pts.
-Catégorie B — Risques Structurants (7 questions) : pénalité −15 pts,
-gain d'atténuation +3 pts.
+Catégorie A — Facteurs de Risque Majeurs / Bloqueurs (6 questions) :
+pénalité −25 pts, gain d'atténuation max +5 pts.
+Catégorie B — Risques Structurants (6 questions) : pénalité −15 pts,
+gain d'atténuation max +3 pts.
+(Ce 6+6 correspond enfin à CLAUDE.md — la répartition 5+7 du code V4
+précédent, avec des questions absentes de la Maquette Vierge (A.1.3,
+A.4.1, B.2.3, B.4.1), était un écart de dérive, pas une évolution
+métier validée. Cf. AUDIT_PERTINENCE_NOTE_CADRAGE.md, point 7.)
 
-Changements V3 -> V4 (cf. directive CC-V4-01) :
-  - +2 questions : A.1.3 (opposition communautaire) et B.4.1 (impacts
-    sanitaires sur les communautés riveraines).
-  - B.3.1 (biodiversité) : n'est plus polarité-inversée-sans-mitigation.
-    A désormais une vraie question R ET une sous-question A séparée
-    (has_separate_r=True), mais la sous-question A s'active quand
-    R = NON (pas R = OUI comme le schéma standard) — cf. "a_condition".
-  - Nouveau champ "shared_cap_group" : A.1.1 et A.1.3 partagent un
-    plafond de pénalité combiné (−25 max pour les deux ensemble, pas
-    −50) — cf. get_questions_by_shared_cap. Le calcul du plafond
-    lui-même reste à implémenter dans grid_scoring.py (hors périmètre
-    CC-V4-01, PENDING sur une prochaine directive V4).
-  - Nouveau champ "a_condition" : "r_oui" (standard, la sous-question A
-    s'active quand R=OUI) ou "r_non" (B.3.1 uniquement).
-
-Deux cas particuliers restants :
-  - B.3.1 (biodiversité) : a_condition="r_non", inverted_polarity=True —
-    R=NON déclenche la pénalité (l'absence de mesures de compensation/
-    suivi écologique est le risque), et c'est ALORS que la sous-question
-    A (vérification tierce) s'active.
-  - B.2.1/B.2.2/B.2.3 (pollution) : module N/A sectoriel — les 3
-    questions sont exclues ensemble (na_module="B.2") si le projet n'a
-    structurellement aucun vecteur de pollution.
+CORRECTIF CC-V4-11 (remplace intégralement la liste QUESTIONS
+précédente) :
+  - Les 12 codes sont désormais EXACTEMENT ceux de la Maquette Vierge :
+    A.1.1, A.1.2, A.2.1, A.2.2, A.3.1, A.3.2, B.1.1, B.1.2, B.2.1, B.2.2,
+    B.3.1, B.3.2. Les anciens codes A.1.3 (opposition communautaire),
+    A.4.1 (force majeure), B.2.3 (déversement/fuite), B.4.1 (impacts
+    sanitaires) n'existent PAS dans la Maquette Vierge et sont retirés
+    partout dans le code (grep récursif vérifié, cf. directive).
+  - A.1.1 fusionne désormais les deux anciens sujets "grève du
+    personnel" ET "blocage physique par des communautés tierces" en une
+    seule question R ("Blocage physique du site OU grève active ?") —
+    ce n'est plus seulement une question "personnel" comme dans le code
+    V4 précédent.
+  - B.3.1 : POLARITÉ STANDARD (PAS inversée), contrairement à l'ancien
+    B.3.1 (biodiversité, inverted_polarity=True) qui portait un sujet
+    différent. La Maquette Vierge formate B.3.1 ("Absence de données de
+    référence (baseline) socio-économiques ?") EXACTEMENT comme les 11
+    autres questions : "Si OUI : -25/-15 pts", mitigation "si R = OUI"
+    — vérifié ligne par ligne contre le PDF, page 2. Aucune des 12
+    questions de la Maquette Vierge n'utilise de polarité inversée.
+    `inverted_polarity` et `a_condition="r_non"` restent des champs
+    valides côté grid_scoring.py/grid_prompts.py (non supprimés, cf.
+    "ne pas modifier grid_scoring.py au-delà du remplacement des
+    codes") mais aucune question ne les active plus — code mort
+    dormant, pas retiré, cf. grid_prompts.py.
+  - "shared_cap_group" : plus aucune question ne le porte (était
+    A.1.1/A.1.3, et A.1.3 n'existe plus — les deux sujets sont
+    fusionnés dans un seul A.1.1, donc plus besoin de plafond partagé).
+    Le mécanisme (`grid_scoring._apply_shared_cap`,
+    `get_questions_by_shared_cap`) reste en place, dormant.
+  - "a_condition" : "r_oui" pour les 12 questions (schéma unique, cf.
+    ci-dessus) — le champ reste présent pour ne pas casser
+    grid_scoring.py/grid_result.py qui le lisent déjà de façon
+    générique.
 
 CHOIX: liste de dicts, pas de dataclass/NamedTuple — cohérent avec le
 reste du projet qui n'utilise ni l'un ni l'autre.
 
-CHANTIER CC-08 (passe CBG, règles de silence) : chaque question porte
-un champ "silence_type" ("evenement" | "etat") qui détermine comment
-traiter l'absence de mention dans un document :
-  - "evenement" : un fait daté (grève, blocage, déversement...) — le
-    silence du rapport vaut NON (« pas de trace = pas eu lieu »).
+CHANTIER CC-08 (passe CBG, règles de silence, conservé tel quel en
+CC-V4-11) : chaque question porte un champ "silence_type" ("evenement" |
+"etat") qui détermine comment traiter l'absence de mention dans un
+document :
+  - "evenement" : un fait daté (grève, blocage, retrait de bailleur...)
+    — le silence du rapport vaut NON (« pas de trace = pas eu lieu »).
   - "etat"      : l'existence d'un système/dispositif ou une conclusion
     qui nécessite des données de mesure — le silence du rapport vaut
     INCONNU (« pas décrit = on ne sait pas »), PAS NON.
@@ -54,17 +73,20 @@ CHOIX: la classification est fixée dans le paramétrage (ci-dessous), pas
 décidée par le LLM au cas par cas — si Elisa modifie une classification,
 changer uniquement la valeur "silence_type" ici, ne pas toucher au code
 qui la consomme (grid_scoring.py/grid_result.py).
-FRAGILE: classification provisoire, cf. table dans la directive CC-08 —
-B.2.2 est classé "etat" (pas "evenement") parce que juger un dépassement
-de seuil nécessite des données de mesure : sans ces données, on ne peut
-pas conclure à un dépassement, contrairement à un événement daté comme un
-blocage physique.
+FRAGILE (CC-V4-11) : classification refaite pour les 12 nouveaux codes,
+par analogie avec la logique CC-08 (mesure/donnée requise -> "etat" ;
+fait daté -> "evenement"), PAS re-validée par Elisa question par
+question — à confirmer lors de la prochaine passe d'annotation.
 
-FRAGILE (CC-V4-01) : grid_scoring.py / grid_result.py / grid_prompts.py
-n'ont pas encore été mis à jour pour la V4 (shared_cap_group, a_condition
-sur B.3.1) — ce chantier est scopé à la seule structure de données
-(grid_questions.py). ESG_QUESTIONS reste exposé comme alias de QUESTIONS
-pour ne pas casser ces modules en attendant leur propre directive V4.
+FRAGILE (CC-V4-11) : `na_module="B.2"` conservé sur B.2.1/B.2.2 (les 2
+questions Pollution restantes) pour ne pas casser le contrôle
+"Modules N/A" déjà présent dans la sidebar (app.py) — la Maquette Vierge
+elle-même ne mentionne pas de mécanisme de désactivation modulaire, ceci
+reste une extension outil, pas une exigence de la maquette.
+
+ESG_QUESTIONS reste exposé comme alias de QUESTIONS pour compatibilité
+avec les imports existants (grid_scoring.py / grid_result.py /
+grid_prompts.py).
 """
 
 import logging
@@ -77,39 +99,54 @@ QUESTIONS = [
     {
         "code": "A.1.1",
         "category": "A",
-        "sous_theme": "Opposition sociale — personnel",
-        "question_r": "Grève ou action collective des employés du projet ou de ses contractants ayant interrompu les travaux ou l'exploitation sur la période ?",
-        "question_a": "Accord collectif, médiation ou indemnisation formalisée avec les représentants du personnel ?",
+        "sous_theme": "Oppositions",
+        "question_r": "Blocage physique du site ou grève active ?",
+        "question_a": "Un accord d'indemnisation ou de médiation a-t-il été signé avec les parties ?",
         "penalty": -25,
         "gain": 5,
         "na_module": None,
         "inverted_polarity": False,
         "has_separate_r": True,
         "silence_type": "evenement",
-        "shared_cap_group": "A.1",
+        "shared_cap_group": None,
         "a_condition": "r_oui",
     },
     {
-        "code": "A.1.3",
+        "code": "A.1.2",
         "category": "A",
-        "sous_theme": "Opposition communautaire",
-        "question_r": "Blocage physique du site, d'une voie d'accès ou d'une installation par des riverains ou communautés tierces, ayant interrompu les travaux ou l'exploitation sur la période ?",
-        "question_a": "Accord de sortie de crise, médiation ou indemnisation formalisée avec les communautés concernées ?",
+        "sous_theme": "Oppositions",
+        "question_r": "Actions en justice suspensives à l'encontre du projet ?",
+        "question_a": "Un désistement, un jugement favorable ou un accord transactionnel a-t-il été obtenu ?",
         "penalty": -25,
         "gain": 5,
         "na_module": None,
         "inverted_polarity": False,
         "has_separate_r": True,
         "silence_type": "evenement",
-        "shared_cap_group": "A.1",
+        "shared_cap_group": None,
         "a_condition": "r_oui",
     },
     {
         "code": "A.2.1",
         "category": "A",
-        "sous_theme": "Opposition environnementale / légale",
-        "question_r": "Recours juridique ou plainte formelle (ONG / communautés / riverains) sur un motif environnemental ou social ?",
-        "question_a": "Désistement obtenu ou jugement favorable rendu sur le fond du grief E&S ?",
+        "sous_theme": "Conformité",
+        "question_r": "Suspension / annulation d'un permis d'exploiter ?",
+        "question_a": "Une régularisation administrative formelle a-t-elle été obtenue ?",
+        "penalty": -25,
+        "gain": 5,
+        "na_module": None,
+        "inverted_polarity": False,
+        "has_separate_r": True,
+        "silence_type": "evenement",
+        "shared_cap_group": None,
+        "a_condition": "r_oui",
+    },
+    {
+        "code": "A.2.2",
+        "category": "A",
+        "sous_theme": "Conformité",
+        "question_r": "Retrait d'un co-financeur / bailleur majeur (ex. IFC) ?",
+        "question_a": "Un refinancement ou un bailleur de substitution a-t-il été sécurisé ?",
         "penalty": -25,
         "gain": 5,
         "na_module": None,
@@ -122,9 +159,9 @@ QUESTIONS = [
     {
         "code": "A.3.1",
         "category": "A",
-        "sous_theme": "Conformité administrative / permis",
-        "question_r": "Retard ou suspension d'obtention d'un permis lié à une lacune procédurale, bloquant le démarrage ou la poursuite du projet ?",
-        "question_a": "Régularisation administrative formelle obtenue ?",
+        "sous_theme": "Faisabilité",
+        "question_r": "Injonction d'arrêt administratif signifiée ?",
+        "question_a": "La levée de l'injonction a-t-elle été prononcée ?",
         "penalty": -25,
         "gain": 5,
         "na_module": None,
@@ -135,11 +172,11 @@ QUESTIONS = [
         "a_condition": "r_oui",
     },
     {
-        "code": "A.4.1",
+        "code": "A.3.2",
         "category": "A",
-        "sous_theme": "Force majeure",
-        "question_r": "Événement externe majeur (catastrophe naturelle, épidémie, conflit armé) ayant entraîné l'arrêt des travaux ou de l'exploitation ?",
-        "question_a": "Plan de sécurisation et de reprise appliqué ?",
+        "sous_theme": "Faisabilité",
+        "question_r": "Accident structurel / rupture d'ouvrage ?",
+        "question_a": "Une réparation certifiée par un tiers indépendant a-t-elle été validée ?",
         "penalty": -25,
         "gain": 5,
         "na_module": None,
@@ -152,9 +189,9 @@ QUESTIONS = [
     {
         "code": "B.1.1",
         "category": "B",
-        "sous_theme": "Subsistance et déplacement",
-        "question_r": "Perte de moyens de subsistance ou déplacement involontaire de communautés riveraines, non compensé ou non réinstallé conformément aux standards ?",
-        "question_a": "Plan de restauration des moyens de subsistance déployé, vérifié par un tiers, et suivi dans le temps ?",
+        "sous_theme": "Communautaire",
+        "question_r": "Perte de moyens de subsistance sans compensation ?",
+        "question_a": "Un plan de restauration des moyens de subsistance (LRP) est-il déployé ?",
         "penalty": -15,
         "gain": 3,
         "na_module": None,
@@ -167,24 +204,24 @@ QUESTIONS = [
     {
         "code": "B.1.2",
         "category": "B",
-        "sous_theme": "Mécanisme de griefs",
-        "question_r": "Absence ou dysfonctionnement du mécanisme de gestion des plaintes communautaires ?",
-        "question_a": "Mécanisme opérationnel, accessible aux communautés concernées, et audité par un tiers ?",
+        "sous_theme": "Communautaire",
+        "question_r": "Déplacement involontaire de populations non réinstallées ?",
+        "question_a": "Un plan de réinstallation conforme a-t-il été exécuté ?",
         "penalty": -15,
         "gain": 3,
         "na_module": None,
         "inverted_polarity": False,
         "has_separate_r": True,
-        "silence_type": "etat",
+        "silence_type": "evenement",
         "shared_cap_group": None,
         "a_condition": "r_oui",
     },
     {
         "code": "B.2.1",
         "category": "B",
-        "sous_theme": "Suivi des rejets",
-        "question_r": "Absence ou non-vérifiabilité du suivi régulier et documenté des rejets (eau, air, bruit, effluents) ?",
-        "question_a": "Protocole de suivi opérationnel, données accessibles et auditables ?",
+        "sous_theme": "Pollution",
+        "question_r": "Dépassements récurrents des seuils Air (PM10) ?",
+        "question_a": "Des dômes de confinement ou mesures d'abattement ont-ils été installés ?",
         "penalty": -15,
         "gain": 3,
         "na_module": "B.2",
@@ -197,69 +234,52 @@ QUESTIONS = [
     {
         "code": "B.2.2",
         "category": "B",
-        "sous_theme": "Dépassement de seuils",
-        "question_r": "Dépassement des seuils environnementaux engagés à l'origine du projet (standards prêteurs et/ou normes nationales) ?",
-        "question_a": "Équipements de traitement ou d'abattage déployés et efficaces, résultat vérifié ?",
+        "sous_theme": "Pollution",
+        "question_r": "Défaut de modélisation du rejet thermique (Eau) ?",
+        "question_a": "Une étude de dispersion thermique à jour a-t-elle été validée ?",
         "penalty": -15,
         "gain": 3,
         "na_module": "B.2",
         "inverted_polarity": False,
         "has_separate_r": True,
         "silence_type": "etat",
-        "shared_cap_group": None,
-        "a_condition": "r_oui",
-    },
-    {
-        "code": "B.2.3",
-        "category": "B",
-        "sous_theme": "Déversement et fuite",
-        "question_r": "Déversement accidentel, fuite ou émission hors contrôle constaté sur la période, avec impact sur le milieu ou les personnes ?",
-        "question_a": "Notification formelle aux autorités et remédiation documentée ?",
-        "penalty": -15,
-        "gain": 3,
-        "na_module": "B.2",
-        "inverted_polarity": False,
-        "has_separate_r": True,
-        "silence_type": "evenement",
         "shared_cap_group": None,
         "a_condition": "r_oui",
     },
     {
         "code": "B.3.1",
         "category": "B",
-        "sous_theme": "Biodiversité",
-        "question_r": "Mesures de compensation (offsets) ou suivi écologique déployés selon le plan prévu ?",
-        "question_a": "Compensation vérifiée par un tiers et résultats de suivi documentés ?",
-        "penalty": -15,
-        "gain": 3,
-        "na_module": None,
-        "inverted_polarity": True,
-        "has_separate_r": True,
-        "silence_type": "etat",
-        "shared_cap_group": None,
-        "a_condition": "r_non",
-    },
-    {
-        "code": "B.4.1",
-        "category": "B",
-        "sous_theme": "Impacts sanitaires sur les communautés riveraines",
-        "question_r": "Dommage sanitaire attesté — maladie, blessure ou atteinte à la santé — imputable au projet sur des populations riveraines, sur la période ?",
-        "question_a": "Programme de santé communautaire, accès aux soins ou indemnisation médicale déployé et vérifié par un tiers ?",
+        "sous_theme": "Gouvernance",
+        "question_r": "Absence de données de référence (baseline) socio-économiques ?",
+        "question_a": "Des études complémentaires couvrent-elles l'intégralité de la zone d'influence ?",
         "penalty": -15,
         "gain": 3,
         "na_module": None,
         "inverted_polarity": False,
         "has_separate_r": True,
-        "silence_type": "evenement",
+        "silence_type": "etat",
+        "shared_cap_group": None,
+        "a_condition": "r_oui",
+    },
+    {
+        "code": "B.3.2",
+        "category": "B",
+        "sous_theme": "Gouvernance",
+        "question_r": "Absence de suivi périodique des données RSE ?",
+        "question_a": "Un reporting ESG périodique a-t-il été rétabli et vérifié ?",
+        "penalty": -15,
+        "gain": 3,
+        "na_module": None,
+        "inverted_polarity": False,
+        "has_separate_r": True,
+        "silence_type": "etat",
         "shared_cap_group": None,
         "a_condition": "r_oui",
     },
 ]
 
-# Alias rétro-compatibilité V3 (CC-01) : grid_scoring.py / grid_result.py /
-# grid_prompts.py importent encore ESG_QUESTIONS et n'ont pas encore été mis
-# à jour pour consommer shared_cap_group / a_condition (hors périmètre de
-# CC-V4-01, cf. docstring du module) — même liste, pas une copie.
+# Alias rétro-compatibilité : grid_scoring.py / grid_result.py /
+# grid_prompts.py importent encore ESG_QUESTIONS — même liste, pas une copie.
 ESG_QUESTIONS = QUESTIONS
 
 
@@ -284,11 +304,17 @@ def get_active_questions(na_modules=None):
 
 def get_questions_by_shared_cap(group):
     """Renvoie la liste des questions partageant un plafond de pénalité.
-    Ex: get_questions_by_shared_cap("A.1") -> [A.1.1, A.1.3]
+
+    CODE MORT DORMANT (CC-V4-11) : aucune question de la Maquette Vierge
+    ne porte de "shared_cap_group" (l'ancien groupe "A.1", qui couplait
+    A.1.1/A.1.3, a disparu avec la fusion des deux sujets dans un seul
+    A.1.1 — cf. docstring du module). Conservé pour une réutilisation
+    future si Elisa introduit un nouveau couplage de pénalités, jamais
+    supprimé silencieusement (convention CLAUDE.md).
 
     CHOIX: ne fait QUE regrouper — le calcul du plafond combiné lui-même
-    (−25 max pour le groupe "A.1", pas −50) vit dans grid_scoring.py, à
-    implémenter dans une prochaine directive V4 (hors périmètre CC-V4-01).
+    vit dans grid_scoring.py (_apply_shared_cap), lui aussi dormant tant
+    qu'aucune question ne porte ce champ.
     """
     return [q for q in QUESTIONS if q.get("shared_cap_group") == group]
 
