@@ -2441,6 +2441,7 @@ def test_integration():
     try:
         test_integration_chunks_to_grid()
         test_integration_section_exclusion_real_chunking()
+        test_page_marker_extraction()
     except Exception as e:
         print(f"  ❌ Erreur d'intégration (chunks -> Grille V4) : {e}")
         import traceback
@@ -2583,6 +2584,107 @@ def test_integration_section_exclusion_real_chunking():
           all(c["section_tag"] != "esap" for c in a_chunks))
     _test("Question A (mitigation) : chunks plaintes IFC exclus (chunking réel)",
           all(c["section_tag"] != "ifc_complaints" for c in a_chunks))
+
+
+def test_page_marker_extraction():
+    """Diagnostic "page ?" Aysha Wind (2026-08-20) : evidence_r["page"]
+    dépendait d'un numéro de page que le LLM devinait depuis des
+    marqueurs *ambiants* (en-têtes/pieds de page qu'un PDF donné avait —
+    ou non — préservés comme texte extractible), d'où "page ?" sur des
+    documents sans ces marqueurs (ESAP tabulaire) même quand des rapports
+    institutionnels (Mundra) fonctionnaient par chance. Fix : app.py::
+    _extract_uploaded_text() insère désormais un marqueur [PAGE:N] avant
+    chaque page PDF, explicite et indépendant de la mise en page source.
+
+    Ce test simule le texte marqué que produirait _extract_uploaded_text()
+    (app.py n'est pas importable ici — module Streamlit avec des appels
+    st.* au niveau module, cf. absence d'"import app" ailleurs dans ce
+    fichier) et vérifie 3 choses : (a) le marqueur survit intact au vrai
+    search.chunk_text() (ni avalé par le filtre boilerplate, ni cassé par
+    la tokenisation mot-à-mot), (b) grid_prompts.get_extraction_prompt()
+    documente la consigne de lecture du marqueur, (c) sur le pipeline
+    complet (search.chunk_text -> grid_analyze réel, LLM monkey-patché),
+    si le LLM lit correctement le marqueur, la page atteint bien
+    evidence_r["page"] — pas une preuve qu'un LLM réel suivra la
+    consigne, seulement que la donnée n'est plus jetée en route
+    (cf. limite déjà documentée dans grid_prompts._PAGE_RULE)."""
+    print("\n--- 2.5c Marqueur [PAGE:N] (diagnostic page '?' Aysha Wind) ---\n")
+
+    import json
+    import config
+    import llm_backend
+    import search
+    import grid_prompts
+    import grid_analyze
+
+    def _pad(label, n):
+        return " ".join(f"{label}word{i}" for i in range(n))
+
+    # Simule le texte que _extract_uploaded_text() produit sur un PDF de
+    # 3 pages (marqueur inséré avant le texte de chaque page).
+    test_text = f"""[PAGE:1]
+    {_pad("intro", 150)}
+
+    [PAGE:2]
+    A strike occurred on site in March 2025 involving unresolved labor disputes.
+    {_pad("context", 150)}
+
+    [PAGE:3]
+    {_pad("closing", 150)}
+    """
+
+    # --- (a) Le marqueur survit au vrai chunking ---
+    chunks = search.chunk_text(test_text)
+    _test("Texte marqué [PAGE:N] -> au moins 1 chunk (pas tout filtré comme boilerplate)",
+          len(chunks) >= 1, f"Obtenu : {len(chunks)} chunk(s)")
+    _test("Marqueur [PAGE:1] survit au chunking (search.chunk_text réel)",
+          any("[PAGE:1]" in c for c in chunks))
+    _test("Marqueur [PAGE:2] survit au chunking, non cassé par la tokenisation mot-à-mot",
+          any("[PAGE:2]" in c for c in chunks))
+
+    # --- (b) Le prompt d'extraction documente la consigne de lecture ---
+    prompt = grid_prompts.get_extraction_prompt("A.1.1", ["[PAGE:2]\nA strike occurred on site."])
+    _test("Prompt d'extraction : marqueur [PAGE:N] documenté", "[PAGE:N]" in prompt)
+    _test("Prompt d'extraction : consigne d'utiliser le marqueur le plus proche",
+          "le plus proche" in prompt)
+    _test("Prompt d'extraction : consigne d'exclure le marqueur du verbatim",
+          "N'inclus JAMAIS le marqueur" in prompt)
+
+    # --- (c) Pipeline complet : la page circule jusqu'à evidence_r si le
+    # LLM la renvoie correctement (plomberie de bout en bout). ---
+    chunks_for_grid = [{"text": c, "page": None} for c in chunks]
+
+    def _fake_dispatch(backend, prompt, model, options, timeout, response_format=None):
+        if "VERBATIM EXTRAIT" in prompt:
+            # Passe 2 (qualification) — statut NON, non pertinent ici :
+            # seul le page-threading de la Passe 1 (evidence_r) est testé.
+            return json.dumps({
+                "code": "A.1.1", "status": "NON", "confidence": "HIGH",
+                "mitigation_status": None, "verbatim_r": None,
+                "verbatim_a_mesure": None, "verbatim_a_defaillance": None,
+                "brief_r": "hors sujet pour ce test", "brief_a": None,
+            })
+        return json.dumps({
+            "code": "A.1.1", "found": True,
+            "verbatim": "A strike occurred on site in March 2025 involving unresolved labor disputes.",
+            "page": 2, "subject": "SPV", "brief": "greve documentee",
+        })
+
+    _orig_enabled = config.GRID_V4_ENABLED
+    _orig_dispatch = llm_backend._dispatch
+    config.GRID_V4_ENABLED = True
+    llm_backend._dispatch = _fake_dispatch
+    try:
+        result = grid_analyze.analyze_grid(chunks_for_grid, document_type=1)
+        _test("Pipeline complet (chunking réel) : résultat non None", result is not None)
+        if result is not None:
+            q = next(q for q in result["questions"] if q["code"] == "A.1.1")
+            _test("Pipeline complet : evidence_r['page'] renseigné (fini le 'page ?' systématique)",
+                  q["evidence_r"] is not None and q["evidence_r"]["page"] == 2,
+                  f"Obtenu : {q.get('evidence_r')!r}")
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+        config.GRID_V4_ENABLED = _orig_enabled
 
 
 # ============================================================================

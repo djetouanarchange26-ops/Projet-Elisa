@@ -115,11 +115,31 @@ def _build_annotated_html(text, spans, limit=3000):
 def _extract_uploaded_text(uploaded_file):
     """Extrait le texte d'un fichier uploadé (.pdf ou .txt).
     ALT: brancher ingest.extract_pdf() pour l'OCR (pdf scannés) si besoin.
+
+    CHOIX (diagnostic "page ?" Aysha Wind, 2026-08-20) : un marqueur
+    `[PAGE:N]` (1-indexé, sans espace pour rester un seul token face à
+    search.chunk_text()) est inséré avant le texte de chaque page. Avant
+    ce marqueur, evidence_r["page"]/evidence_a["page"] dépendaient d'un
+    numéro de page que le LLM devait deviner depuis des marqueurs
+    *ambiants* (en-têtes/pieds de page qu'un PDF donné avait — ou non —
+    conservés comme texte extractible) : ça marchait par hasard sur les
+    PDF institutionnels type Mundra, jamais sur un ESAP tabulaire type
+    Aysha Wind. Le marqueur est un signal explicite et systématique,
+    indépendant de la mise en page source — cf. grid_prompts._EXTRACTION_PROMPT
+    pour la consigne de lecture (utiliser le marqueur le plus proche,
+    jamais un autre numéro visible dans le texte, jamais l'inclure dans
+    le verbatim extrait). Pas de garantie à 100% (le LLM peut ignorer la
+    consigne) mais un signal fiable qui n'existait pas avant, pour un
+    coût quasi nul (aucune nouvelle dépendance, aucun mapping d'offsets
+    à maintenir côté Python).
     """
     if uploaded_file.name.lower().endswith(".txt"):
         return uploaded_file.read().decode("utf-8", errors="ignore")
     with pdfplumber.open(uploaded_file) as pdf:
-        return "\n".join(page.extract_text() or "" for page in pdf.pages)
+        return "\n".join(
+            f"[PAGE:{i}]\n{page.extract_text() or ''}"
+            for i, page in enumerate(pdf.pages, start=1)
+        )
 
 
 def _extract_multi_doc_text(uploaded_files):
@@ -324,21 +344,28 @@ def _compute_document_specificity(doc_chunks):
 
 
 def _chunks_with_pages(pdf_text, chunks):
-    """Associe chaque chunk à son numéro de page — STUB MVP (CC-V4-09).
+    """Associe chaque chunk à son numéro de page — STUB MVP (CC-V4-09),
+    page=None au niveau de cette métadonnée de chunk, TOUJOURS.
 
     CHOIX: search.chunk_text() (réutilisé tel quel, cf. "Ce qu'il ne faut
-    PAS faire" de CC-V4-09) ne retourne que du texte brut, sans numéro de
-    page — il n'y a aujourd'hui aucune table d'offsets page/texte à
-    consulter ici. page=None plutôt que l'index du chunk (cf. CC-V4-08 :
-    un faux numéro de page serait trompeur dans l'Evidence explorer,
-    grid_display.py affiche "Page ?" proprement pour None). Le numéro de
-    page reste informatif, jamais scorant (grid_scoring.py ne le lit pas).
+    PAS faire" de CC-V4-09) ne retourne que du texte brut, sans offset de
+    page calculé côté Python — cette fonction reste donc un stub qui ne
+    déduit rien de `pdf_text`. Ça n'empêche PAS grid_analyze.py de
+    connaître la page d'un verbatim : depuis le diagnostic "page ?" Aysha
+    Wind (2026-08-20), _extract_uploaded_text() insère un marqueur
+    `[PAGE:N]` dans le texte de chaque page AVANT le chunking — ce
+    marqueur voyage donc DANS le texte de chaque chunk (`c["text"]` ici),
+    et c'est le LLM qui le lit directement au moment de l'extraction
+    (grid_prompts._EXTRACTION_PROMPT), pas cette fonction. Le champ
+    "page" retourné ici reste None par construction ; ne pas le confondre
+    avec evidence_r["page"]/evidence_a["page"] dans le résultat final,
+    qui eux peuvent être renseignés.
 
-    FRAGILE: à améliorer quand search.chunk_text() (ou un module dédié)
-    saura restituer un offset de page par chunk — ex. extraction
-    pdfplumber page par page en amont, puis recherche du texte de chaque
-    chunk dans son offset correspondant. Pas fait ici : `pdf_text` n'est
-    pour l'instant qu'un paramètre réservé à cet usage futur.
+    FRAGILE: un vrai mapping d'offsets calculé côté Python (déterministe,
+    indépendant du LLM) reste l'amélioration ultérieure si le marqueur
+    textuel s'avère insuffisant (verbatim à cheval sur 2 pages, LLM qui
+    ignore la consigne) — pas fait ici, coût jugé disproportionné à 5
+    jours de la soutenance face au gain du marqueur seul.
     """
     return [{"text": c, "page": None} for c in chunks]
 

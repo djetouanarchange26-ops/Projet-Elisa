@@ -151,6 +151,18 @@ Ne JAMAIS résoudre une ambiguïté de sujet par défaut vers SPV — un doute s
 
 _VALID_SUBJECTS = ("SPV", "LENDER", "SUBSTITUTION", "AMBIGUOUS", "INDIRECT")
 
+# --- Numéro de page (diagnostic "page ?" Aysha Wind, 2026-08-20) : les
+# PASSAGES contiennent des marqueurs [PAGE:N] insérés par
+# app.py::_extract_uploaded_text() avant chaque page du PDF source — un
+# signal explicite et systématique, à préférer à tout numéro visible
+# ailleurs dans le texte (en-tête, pied de page, numéro de section) qui
+# peut être ambigu ou absent selon la mise en page du document. ---
+_PAGE_RULE = """Les PASSAGES contiennent des marqueurs [PAGE:N] indiquant le début de chaque page du document source.
+Pour le champ "page" : utilise le numéro du marqueur [PAGE:N] le plus proche AVANT le verbatim extrait.
+N'utilise JAMAIS un autre numéro visible dans le texte (numéro de section, référence croisée, année) pour remplir "page".
+Si aucun marqueur [PAGE:N] n'apparaît dans les PASSAGES, réponds "page": null.
+N'inclus JAMAIS le marqueur [PAGE:N] lui-même dans le champ "verbatim" — il ne fait pas partie du texte du rapport."""
+
 # ============================================================================
 # Templates — Passe 1 (EXTRACTION)
 # ============================================================================
@@ -184,6 +196,10 @@ Un item d'ESAP COMPTE quand même comme correspondance (found=true) — c'est un
 === SUJET ===
 
 {subject_rule}
+
+=== PAGE ===
+
+{page_rule}
 
 {few_shot_extraction}
 
@@ -463,6 +479,7 @@ def get_extraction_prompt(question_code, context_chunks, document_type=1):
         materialisation_rule=materialisation_rule,
         temporal_rule=temporal,
         subject_rule=_SUBJECT_RULE,
+        page_rule=_PAGE_RULE,
         few_shot_extraction=_format_few_shot_extraction(question_code),
     )
 
