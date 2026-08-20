@@ -2005,35 +2005,38 @@ def test_grid_v4_export():
     _test("build_grid_v4_excel : signature PK (format ZIP/xlsx)",
           xlsx_bytes[:2] == b"PK", f"Obtenu : {xlsx_bytes[:2]!r}")
 
-    # --- Contenu Excel : 4 feuilles, remplissage conditionnel ---
+    # --- Contenu Excel : 3 feuilles (Synthese/Grille/Detail), remplissage
+    # conditionnel — structure maquette Elisa 2026-08-20 (remplace l'ancien
+    # découpage à 4 feuilles Synthese/Grille/Evidence/Qualifiants, cf.
+    # directive refonte exports).
     import io
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(xlsx_bytes))
-    _test("Excel : 4 feuilles (Synthese, Grille, Evidence, Qualifiants)",
-          wb.sheetnames == ["Synthese", "Grille", "Evidence", "Qualifiants"],
+    _test("Excel : 3 feuilles (Synthese, Grille, Detail)",
+          wb.sheetnames == ["Synthese", "Grille", "Detail"],
           f"Obtenu : {wb.sheetnames}")
 
     ws_grille = wb["Grille"]
     _test("Excel/Grille : 12 lignes de données + 1 en-tête",
           ws_grille.max_row == 13, f"Obtenu : {ws_grille.max_row}")
 
-    # A.1.1 est en ligne 2 (ordre de grid_questions.QUESTIONS) avec pénalité
-    # -25 < 0 -> la cellule Pénalité (colonne 7) doit avoir le fond rouge clair.
-    penalty_cell = ws_grille.cell(row=2, column=7)
-    _test("Excel/Grille : fond rouge clair si pénalité < 0 (A.1.1)",
-          penalty_cell.fill.start_color.rgb in ("00F8D7DA", "F8D7DA"),
-          f"Obtenu : {penalty_cell.fill.start_color.rgb!r}")
+    # A.1.1 est en ligne 2 (ordre de grid_questions.QUESTIONS), status=OUI
+    # -> la cellule Statut (colonne 3) doit avoir le fond rouge clair
+    # (remplissage conditionnel sur le Statut, pas sur la Pénalité).
+    statut_cell = ws_grille.cell(row=2, column=3)
+    _test("Excel/Grille : fond rouge clair si Statut=OUI (A.1.1)",
+          statut_cell.fill.start_color.rgb in ("00F8D7DA", "F8D7DA"),
+          f"Obtenu : {statut_cell.fill.start_color.rgb!r}")
 
-    ws_evidence = wb["Evidence"]
-    _test("Excel/Evidence : au moins une ligne de données",
-          ws_evidence.max_row > 1, f"Obtenu : {ws_evidence.max_row}")
-    _test("Excel/Evidence : colonne Sujet présente",
-          [c.value for c in ws_evidence[1]] == ["Code", "Type", "Page", "Passage", "Sujet"])
-
-    ws_qualif = wb["Qualifiants"]
-    _test("Excel/Qualifiants : au moins une ligne de données (A.2.1)",
-          ws_qualif.max_row > 1, f"Obtenu : {ws_qualif.max_row}")
+    ws_detail = wb["Detail"]
+    _test("Excel/Detail : au moins une ligne de données",
+          ws_detail.max_row > 1, f"Obtenu : {ws_detail.max_row}")
+    _test("Excel/Detail : colonnes attendues",
+          [c.value for c in ws_detail[1]] == [
+              "Code", "Statut", "Verbatim risque", "Page",
+              "Verbatim mitigation", "Defaillance", "Confiance",
+          ])
 
 
 def test_grid_questions_v4():

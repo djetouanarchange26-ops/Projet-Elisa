@@ -518,7 +518,7 @@ warmup_ollama()
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="ESG Risk Intelligence — CA-CIB",
+    page_title="ESG Risk Intelligence",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -729,7 +729,7 @@ section[data-testid="stSidebar"] .stRadio label {
 # ── Header ───────────────────────────────────────────────────
 st.markdown("""
 <div class="header-bar">
-    <div class="header-logo">CA-CIB <span>ESG Risk Intelligence</span></div>
+    <div class="header-logo"><span>ESG Risk Intelligence</span></div>
     <div class="header-badge">NLP Prototype — MVP</div>
 </div>
 """, unsafe_allow_html=True)
@@ -798,48 +798,12 @@ with st.sidebar:
             key="grid_v4_na_modules",
             help="B.2 (pollution) : N/A si le projet n'a aucun vecteur de pollution",
         )
-
-        # ── 4 champs manuels obligatoires (BLOC D, CC-V4-11) ──
-        # CHOIX: saisie libre, JAMAIS extraite du document (cf. "Ce qu'il
-        # ne faut PAS faire" de la directive) — ces 4 champs sont du
-        # contexte de dossier que seul l'analyste connaît (classification
-        # EP, sensibilité portefeuille, montant, rôle CACIB), pas des
-        # informations qu'un LLM pourrait fiablement extraire d'un ESRS.
-        # index=None sur les selectbox -> aucune valeur par défaut
-        # trompeuse ; le blocage (cf. plus bas, avant "Run Analysis")
-        # se base sur ces 4 clés de session_state valant encore None/"".
-        st.markdown("---")
-        st.subheader("Contexte du dossier")
-
-        st.selectbox(
-            "Classification Equator Principles",
-            options=["A", "B", "C"],
-            index=None,
-            key="grid_v4_ep_class",
-            help="Catégorie E&S du projet",
-        )
-
-        st.selectbox(
-            "Statut de sensibilité",
-            options=["Sensible", "Non sensible", "Watchlist"],
-            index=None,
-            key="grid_v4_sensitivity",
-            help="Statut dans le portefeuille de la banque",
-        )
-
-        st.text_input(
-            "Montant du financement (M€ ou MUSD)",
-            key="grid_v4_financing",
-            help="Montant total du financement",
-        )
-
-        st.selectbox(
-            "Rôle de CACIB",
-            options=["Mandated Lead Arranger", "Participant", "Agent", "Co-arrangeur", "Autre"],
-            index=None,
-            key="grid_v4_cacib_role",
-            help="Rôle de CA-CIB dans le deal",
-        )
+        # Les 4 champs manuels obligatoires (BLOC D, CC-V4-11) sont
+        # remontés en haut de la page principale, avant l'upload (maquette
+        # Elisa) — cf. bloc "Contexte du dossier" dans la page Transaction
+        # Analysis ci-dessous. Clés session_state INCHANGÉES (grid_v4_
+        # ep_class/_sensitivity/_financing/_cacib_role), seul l'emplacement
+        # du widget change.
 
 
 # ══════════════════════════════════════════════════════════════
@@ -848,6 +812,54 @@ with st.sidebar:
 if page == "🔍 Transaction Analysis":
     st.markdown("## 🔍 Transaction Analysis")
     st.markdown("*Upload a project document or paste text to detect ESG risk signals*")
+
+    # ── Contexte du dossier (BLOC D, CC-V4-11) — 4 champs manuels
+    # obligatoires, remontés depuis la sidebar (maquette Elisa) : bloc
+    # visible en haut de la page principale, AVANT l'upload. CHOIX: saisie
+    # libre, JAMAIS extraite du document (cf. "Ce qu'il ne faut PAS faire"
+    # de la directive) — clés session_state INCHANGÉES (grid_v4_ep_class/
+    # _sensitivity/_financing/_cacib_role) pour ne pas casser le résultat
+    # ni les exports. Le contrôle bloquant (avant "Run Analysis") reste
+    # inchangé plus bas.
+    if config.GRID_V4_ENABLED and config.ACTIVE_PIPELINE == "v4":
+        st.subheader("Contexte du dossier")
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.selectbox(
+                "Classification Equator Principles",
+                options=["A", "B", "C"],
+                index=None,
+                key="grid_v4_ep_class",
+                help="Catégorie E&S du projet",
+            )
+
+        with col2:
+            st.selectbox(
+                "Statut de sensibilité",
+                options=["Sensible", "Non sensible", "Watchlist"],
+                index=None,
+                key="grid_v4_sensitivity",
+                help="Statut dans le portefeuille de la banque",
+            )
+
+        with col3:
+            st.text_input(
+                "Montant du financement (M€ ou MUSD)",
+                key="grid_v4_financing",
+                help="Montant total du financement",
+            )
+
+        with col4:
+            st.selectbox(
+                "Rôle dans le deal",
+                options=["Mandated Lead Arranger", "Participant", "Agent", "Co-arrangeur", "Autre"],
+                index=None,
+                key="grid_v4_cacib_role",
+                help="Rôle de la banque dans le deal",
+            )
+
+        st.markdown("---")
 
     # ── Input zone — fichier ou texte collé ───────────────────
     input_mode = st.radio(
@@ -903,8 +915,8 @@ if page == "🔍 Transaction Analysis":
     if has_input and not manual_fields_ok:
         st.warning(
             "Remplissez les 4 champs contextuels (Classification Equator Principles, "
-            "Statut de sensibilité, Montant du financement, Rôle de CACIB) dans la "
-            "barre latérale avant de lancer l'analyse."
+            "Statut de sensibilité, Montant du financement, Rôle dans le deal) "
+            "avant de lancer l'analyse."
         )
 
     analyze_error = None

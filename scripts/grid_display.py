@@ -1,46 +1,63 @@
 """
-GRILLE ESG V4 — affichage Streamlit (directive CC-V4-08)
+GRILLE ESG V4 — affichage Streamlit (directive CC-V4-08, refonte maquette
+Elisa 2026-08-20)
 =====================================================================
 Rendu de l'onglet « ESG Grid V4 (beta) » : assemblage pur d'un résultat
 déjà produit par grid_analyze.analyze_grid() (cf. grid_result.py pour le
 contrat exact) en composants Streamlit. Aucune logique de scoring ni
-d'appel LLM ici — uniquement de l'affichage.
+d'appel LLM ici — uniquement de l'affichage. `result_v4` n'est jamais
+modifié — cf. "Ce qu'il ne faut PAS faire" de la directive refonte
+layout (ne pas changer la structure du dict, seulement son affichage).
 
 CHOIX: module séparé plutôt qu'une fonction de plus dans app.py (déjà
 ~1270 lignes) — cf. directive CC-V4-08, "le fichier séparé est plus
 propre". Import plat (`import grid_display`), cohérent avec le reste de
 scripts/ (pas de package).
 
-3 sections empilées verticalement (vision produit Elisa) :
-  1. Risk Summary   — score, couleur, top drivers, points INCONNU/favorables
-  2. Grille détaillée — tableau des 12 questions
-  3. Evidence explorer — un expander par question, verbatims + doute LLM
+5 sections empilées verticalement (maquette papier Elisa, 2026-08-20 —
+remplace l'ancien layout Risk Summary/Grille/Evidence explorer à 3
+blocs) :
+  1. Description du projet — contexte dossier (4 champs BLOC D), mode de
+     lecture, document, date de génération
+  2. Score — score/100, couleur, questions actives, plafond atténuation
+  3. Signaux identifiés — KPI : toutes les questions OUI/INCONNU avec
+     verbatim tronqué (fusion de l'ancien "Risques identifiés" + "Non
+     documenté")
+  4. Synthèse — texte libre optionnel (result_v4.get("synthesis")),
+     section masquée si absent. Aucune clé "synthesis" n'existe encore
+     dans le contrat result_v4 (cf. grid_result.py) — deep_analysis
+     n'est pas branché sur le pipeline V4 à ce jour (cf. app.py:
+     deep_analysis n'est appelé que si pipeline_used=="legacy"). Lu en
+     `.get()` défensif exprès : la section reste masquée aujourd'hui et
+     s'activera automatiquement le jour où ce champ sera peuplé, sans
+     modifier ce module (donc sans toucher grid_analyze.py/grid_result.py,
+     hors périmètre de cette directive).
+  5. Grille — liste des 12 questions, ligne compacte si rien à montrer,
+     expander sinon (fusionne l'ancien tableau + evidence explorer en une
+     seule liste, comme demandé par la maquette)
 
-FRAGILE (écarts corrigés par rapport au brouillon de la directive) :
+FRAGILE (écarts corrigés par rapport à des brouillons de directive
+précédents — même vigilance appliquée à la maquette 2026-08-20) :
   - `reading_mode_label` est un champ de NIVEAU RÉSULTAT
-    (result_v4["reading_mode_label"]), pas de result_v4["scoring"]
-    (cf. grid_result.build_grid_result, CC-V4-03) — le brouillon lisait
-    scoring["reading_mode_label"], qui n'existe pas.
+    (result_v4["reading_mode_label"]), pas de result_v4["scoring"] (cf.
+    grid_result.build_grid_result, CC-V4-03).
+  - Les questions n'ont pas de clé "sub_theme"/"net"/"verbatim" — ce sont
+    "sous_theme", penalty+gain calculé ici, et evidence_r["passage"]
+    (cf. grid_result.py pour le contrat exact).
   - `mitigation_label`/`evidence_r["page"]`/`evidence_a["page"]` sont des
     clés TOUJOURS PRÉSENTES mais dont la valeur peut être None — un
     `dict.get(clé, défaut)` ne retombe sur `défaut` que si la clé est
-    ABSENTE, pas si sa valeur est None. Corrigé en `dict.get(clé) or
-    défaut` partout où c'est pertinent.
-  - `shared_cap_applied` : le brouillon réécrivait la cellule "Pénalité"
-    en string ("0 (plafonné)") pour la ligne concernée, ce qui aurait
-    rendu la colonne à dtype mixte (int + str) et cassé le formatage
-    st.column_config.NumberColumn de tout le tableau. Déplacé dans une
-    colonne "Notes" dédiée, avec atteste/verrou_applique.
-  - Evidence explorer : le brouillon masquait aussi les questions
-    status="NA" sans evidence_r pertinent à montrer — or NA exige
-    TOUJOURS un evidence_r (cf. grid_questions.SILENCE_VALUES["NA"],
-    "verbatim obligatoire") : le masquer priverait l'analyste de la
-    justification du N/A. Seul "NON" par silence standard est masqué.
+    ABSENTE, pas si sa valeur est None. `dict.get(clé) or défaut` partout
+    où c'est pertinent.
+  - Grille (section 5) : masquer une question ne s'applique QUE pour un
+    NON par silence standard, non attesté, côté a_condition="r_oui" — un
+    NA exige TOUJOURS un evidence_r (cf. grid_questions.SILENCE_VALUES
+    ["NA"], "verbatim obligatoire") et reste donc toujours dépliable.
 """
 
 import logging
+from datetime import datetime
 
-import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
@@ -69,9 +86,11 @@ def render_grid_v4_tab(result_v4, project_name=""):
         return
 
     _render_document_type_detection(result_v4)
-    _render_risk_summary(result_v4)
-    _render_grid_table(result_v4)
-    _render_evidence_explorer(result_v4)
+    _render_project_description(result_v4, project_name)
+    _render_score(result_v4)
+    _render_signals(result_v4)
+    _render_synthesis(result_v4)
+    _render_grid(result_v4)
     _render_export_buttons(result_v4, project_name)
 
 
@@ -138,142 +157,146 @@ def _render_export_buttons(result_v4, project_name):
 
 
 # ============================================================================
-# SECTION 1 — RISK SUMMARY
+# SECTION 1 — DESCRIPTION DU PROJET
 # ============================================================================
 
-def _render_risk_summary(result_v4):
+def _render_project_description(result_v4, project_name):
+    st.markdown("### Description du projet")
+
+    context = result_v4.get("context") or {}
+    ctx_parts = []
+    if context.get("ep_classification"):
+        ctx_parts.append(f"**EP :** {context['ep_classification']}")
+    if context.get("sensitivity"):
+        ctx_parts.append(f"**Sensibilité :** {context['sensitivity']}")
+    if context.get("financing_amount"):
+        ctx_parts.append(f"**Montant :** {context['financing_amount']}")
+    if context.get("cacib_role"):
+        ctx_parts.append(f"**Rôle :** {context['cacib_role']}")
+    if ctx_parts:
+        st.markdown(" · ".join(ctx_parts))
+
+    mode_label = result_v4.get("reading_mode_label") or "—"
+    st.markdown(f"**Mode de lecture :** {mode_label}")
+    if project_name:
+        st.markdown(f"**Document :** {project_name}")
+    st.markdown(f"**Date :** {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    st.markdown("---")
+
+
+# ============================================================================
+# SECTION 2 — SCORE
+# ============================================================================
+
+def _render_score(result_v4):
     scoring = result_v4["scoring"]
     score = scoring["score"]
     color = scoring["color"]
-    mode_label = result_v4.get("reading_mode_label") or "—"
 
-    st.header("ESG Risk Summary")
+    st.markdown(
+        f'<div style="text-align:center;padding:20px;border-radius:12px;'
+        f'background:{_COLOR_MAP.get(color, "#ccc")}20;'
+        f'border:2px solid {_COLOR_MAP.get(color, "#ccc")}">'
+        f'<h1 style="margin:0;color:{_COLOR_MAP.get(color, "#333")}">'
+        f'{score}/100</h1>'
+        f'<p style="margin:4px 0 0 0;font-weight:600">{color}'
+        f'{"  — Éliminatoire" if scoring.get("saturation") else ""}</p>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
-    col_score, col_meta = st.columns([1, 2])
-    with col_score:
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.metric("Questions actives", f"{scoring['questions_active']} / 12")
+    with col_b:
+        st.metric("Plafond atténuation", "Oui" if scoring["cap_applied"] else "Non")
+    if scoring["cap_applied"]:
+        st.caption(
+            f"⚠️ Gain d'atténuation plafonné : {scoring['total_gain']} → {scoring['total_gain_capped']}"
+        )
+    if scoring["questions_na"] > 0:
+        st.caption(f"Questions N/A : {scoring['questions_na']}")
+
+    st.markdown("---")
+
+
+# ============================================================================
+# SECTION 3 — SIGNAUX IDENTIFIÉS (KPI)
+# ============================================================================
+
+def _render_signals(result_v4):
+    st.markdown("### Signaux identifiés")
+
+    risk_questions = [q for q in result_v4["questions"] if q["status"] in ("OUI", "INCONNU")]
+
+    if not risk_questions:
+        st.success("Aucun risque identifié.")
+        st.markdown("---")
+        return
+
+    icon_map = {"OUI": "🔴", "INCONNU": "🟡"}
+    for q in risk_questions:
+        net = q["penalty"] + q.get("gain", 0)
+        mit_label = q.get("mitigation_label")
+        mit_suffix = f" · Mitigation : {mit_label}" if mit_label else ""
+
         st.markdown(
-            f'<div style="text-align:center;padding:20px;border-radius:12px;'
-            f'background:{_COLOR_MAP.get(color, "#ccc")}20;'
-            f'border:2px solid {_COLOR_MAP.get(color, "#ccc")}">'
-            f'<h1 style="margin:0;color:{_COLOR_MAP.get(color, "#333")}">'
-            f'{score}/100</h1>'
-            f'<p style="margin:4px 0 0 0;font-weight:600">{color}'
-            f'{"  — Éliminatoire" if scoring.get("saturation") else ""}</p>'
-            f'</div>',
-            unsafe_allow_html=True,
+            f"**{icon_map.get(q['status'], '⚪')} {q['code']} — {q['sous_theme']}** "
+            f"({net:+d} pts{mit_suffix})"
         )
 
-    with col_meta:
-        st.markdown(f"**Mode de lecture** : {mode_label}")
-        st.markdown(f"**Questions actives** : {scoring['questions_active']} / 12")
-        if scoring["questions_na"] > 0:
-            st.markdown(f"**Questions N/A** : {scoring['questions_na']}")
-        if scoring["cap_applied"]:
-            st.markdown(
-                f"⚠️ Plafond d'atténuation appliqué "
-                f"({scoring['total_gain']} → {scoring['total_gain_capped']})"
-            )
+        ev_r = q.get("evidence_r")
+        verbatim = ev_r.get("passage") if ev_r else None
+        if verbatim:
+            # Tronqué à 200 caractères pour le résumé (maquette Elisa) — le
+            # verbatim complet reste visible dans la Grille, section 5.
+            display = verbatim[:200] + "…" if len(verbatim) > 200 else verbatim
+            st.caption(f'"{display}"')
 
-    # Top Risk Drivers (questions côté "risque" de leur schéma, cf.
-    # a_condition — OUI pour le schéma standard, NON pour B.3.1).
-    risk_drivers = [
-        q for q in result_v4["questions"]
-        if q["status"] == "OUI" or (q.get("a_condition") == "r_non" and q["status"] == "NON")
-    ]
-    risk_drivers.sort(key=lambda q: q["penalty"])
-
-    if risk_drivers:
-        st.subheader("Risques identifiés")
-        for q in risk_drivers:
-            penalty = q["penalty"]
-            mit_label = q.get("mitigation_label") or "—"
-            gain = q.get("gain", 0)
-            net = penalty + gain
-            st.markdown(
-                f"- **{q['code']}** {q['sous_theme']} — "
-                f"pénalité {penalty}, mitigation {mit_label} "
-                f"({'+' if gain > 0 else ''}{gain}), net = {net}"
-            )
-
-    # Points INCONNU (silence sur une question d'état/système, cf. R5)
-    inconnu_qs = [q for q in result_v4["questions"] if q["status"] == "INCONNU"]
-    if inconnu_qs:
-        st.subheader("Non documenté")
-        for q in inconnu_qs:
-            st.markdown(f"- **{q['code']}** {q['sous_theme']} — information absente du document")
-
-    # Mitigations prouvées
-    proven_mits = [q for q in result_v4["questions"] if q.get("mitigation_status") == "OUI_PROUVEE"]
-    if proven_mits:
-        st.subheader("Points favorables")
-        for q in proven_mits:
-            st.markdown(f"- **{q['code']}** {q['sous_theme']} — mitigation prouvée (+{q.get('gain', 0)})")
+    st.markdown("---")
 
 
 # ============================================================================
-# SECTION 2 — GRILLE DÉTAILLÉE
+# SECTION 4 — SYNTHÈSE (si disponible)
 # ============================================================================
 
-def _render_grid_table(result_v4):
-    scoring = result_v4["scoring"]
-    score = scoring["score"]
+def _render_synthesis(result_v4):
+    synthesis = result_v4.get("synthesis")
+    if not synthesis:
+        return
 
-    st.header("Grille d'évaluation — 12 questions")
-
-    rows = []
-    for q in result_v4["questions"]:
-        notes = []
-        if q.get("atteste"):
-            notes.append("attesté")
-        if q.get("verrou_applique"):
-            notes.append("verrou B.2.1→B.2.2")
-        if q.get("shared_cap_applied"):
-            notes.append("plafond partagé A.1")
-
-        rows.append({
-            "Code": q["code"],
-            "Sous-thème": q["sous_theme"],
-            "Statut": q["status"],
-            "Mitigation": q.get("mitigation_label") or "—",
-            "Pénalité": q["penalty"],
-            "Gain": q.get("gain", 0),
-            "Net": q["penalty"] + q.get("gain", 0),
-            "Notes": ", ".join(notes),
-        })
-
-    df = pd.DataFrame(rows)
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Pénalité": st.column_config.NumberColumn(format="%d"),
-            "Gain": st.column_config.NumberColumn(format="%+d"),
-            "Net": st.column_config.NumberColumn(format="%d"),
-        },
-    )
-
-    gain_display = f" +{scoring['total_gain_capped']}" if scoring["total_gain_capped"] > 0 else ""
-    st.caption(
-        f"Score = max(0, 100 {scoring['total_penalty']:+d}{gain_display}) = {score}"
-    )
+    st.markdown("### Synthèse")
+    st.write(synthesis)
+    st.markdown("---")
 
 
 # ============================================================================
-# SECTION 3 — EVIDENCE EXPLORER
+# SECTION 5 — GRILLE (12 questions, table + preuves fusionnées)
 # ============================================================================
 
-def _render_evidence_explorer(result_v4):
-    st.header("Preuves")
+def _render_grid(result_v4):
+    st.markdown("### Grille d'évaluation — 12 questions")
+
+    status_icon = {"OUI": "🔴", "NON": "🟢", "INCONNU": "🟡", "NA": "⚪"}
 
     for q in result_v4["questions"]:
-        # Rien à montrer pour un NON par silence en schéma standard, non
-        # attesté — mais JAMAIS pour NA (verbatim de justification
-        # obligatoire, cf. grid_questions.SILENCE_VALUES["NA"]).
-        if q["status"] == "NON" and not q.get("atteste") and q.get("a_condition", "r_oui") == "r_oui":
+        icon = status_icon.get(q["status"], "⚪")
+        header = f"{icon} {q['code']} — {q['sous_theme']} : **{q['status']}**"
+
+        # Rien à déplier pour un NON par silence standard (schéma
+        # a_condition="r_oui"), non attesté — mais JAMAIS pour NA
+        # (verbatim de justification obligatoire, cf. grid_questions.
+        # SILENCE_VALUES["NA"]) ni pour un NON attesté (preuve à montrer).
+        has_detail = not (
+            q["status"] == "NON" and not q.get("atteste") and q.get("a_condition", "r_oui") == "r_oui"
+        )
+
+        if not has_detail:
+            st.markdown(header)
             continue
 
-        with st.expander(f"**{q['code']}** — {q['sous_theme']} ({q['status']})", expanded=False):
+        with st.expander(header, expanded=False):
             ev_r = q.get("evidence_r")
             if ev_r and ev_r.get("passage"):
                 st.markdown("**Preuve de risque**")
@@ -288,6 +311,10 @@ def _render_evidence_explorer(result_v4):
                     st.markdown("**Défaillance constatée**")
                     st.warning(f"*\"{ev_a['verbatim_defaillance']}\"*")
 
+            mit_label = q.get("mitigation_label")
+            if mit_label:
+                st.markdown(f"**Statut mitigation :** {mit_label}")
+
             confidence = q.get("confidence_note")
             if confidence:
                 st.markdown("**Doute de l'analyste IA**")
@@ -300,3 +327,9 @@ def _render_evidence_explorer(result_v4):
                     st.markdown("**Champs qualifiants** (non scorants)")
                     for k, v in qual_items:
                         st.caption(f"_{k}_ : {v}")
+
+    scoring = result_v4["scoring"]
+    gain_display = f" +{scoring['total_gain_capped']}" if scoring["total_gain_capped"] > 0 else ""
+    st.caption(
+        f"Score = max(0, 100 {scoring['total_penalty']:+d}{gain_display}) = {scoring['score']}"
+    )

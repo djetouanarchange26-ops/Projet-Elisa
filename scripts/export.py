@@ -20,7 +20,7 @@ from datetime import datetime
 
 from fpdf import FPDF
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
 
@@ -274,43 +274,43 @@ def _truncate(text, max_len):
     return text if len(text) <= max_len else text[: max_len - 1].rstrip() + "…"
 
 
-def _question_has_detail(question):
-    """True si `question` a quelque chose à montrer dans la section détail
-    (PDF) / feuille Evidence (Excel) : un verbatim de risque, de mitigation,
-    de défaillance, une note de doute, ou des champs qualifiants.
+class _GridV4PDF(FPDF):
+    """Sous-classe locale à la Grille V4 (pied de page "Confidentiel", cf.
+    directive refonte layout 2026-08-20) — n'affecte PAS build_pdf_report
+    (pipeline legacy, hors périmètre de cette directive), qui continue à
+    utiliser FPDF nu."""
 
-    CHOIX: même heuristique que grid_display._render_evidence_explorer —
-    un NON par silence en schéma standard (a_condition="r_oui"), non
-    attesté, n'a rien de pertinent à montrer. JAMAIS pour NA : un statut
-    N/A exige toujours un verbatim de justification (cf.
-    grid_questions.SILENCE_VALUES["NA"]), qui doit rester visible.
-    """
-    if question["status"] == "NON" and not question.get("atteste") and question.get("a_condition", "r_oui") == "r_oui":
-        return False
-    ev_r = question.get("evidence_r")
-    ev_a = question.get("evidence_a")
-    return bool(
-        (ev_r and ev_r.get("passage"))
-        or (ev_a and (ev_a.get("verbatim_mesure") or ev_a.get("verbatim_defaillance")))
-        or question.get("confidence_note")
-        or question.get("qualifying")
-    )
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("Helvetica", "I", 8)
+        self.set_text_color(120, 120, 120)
+        self.cell(
+            0, 10,
+            _safe(f"Confidentiel - Genere le {datetime.now().strftime('%Y-%m-%d %H:%M')}"),
+            align="C",
+        )
+        self.set_text_color(0, 0, 0)
 
 
 def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
-    """Génère un rapport PDF de la Grille V4 (12 questions).
+    """Génère un rapport PDF de la Grille V4 (12 questions), maquette Elisa
+    2026-08-20.
 
     CHOIX: fpdf2 comme l'export existant — pas de nouvelle dépendance.
     `filename` n'est pas utilisé ici (le nom du fichier téléchargé est du
     ressort de st.download_button côté appelant, cf. app.py) — conservé
     dans la signature pour matcher le contrat attendu par CC-V4-10.
 
-    Structure :
-    - Page 1 : titre, score, couleur, mode de lecture, risques identifiés,
-      questions non documentées (INCONNU)
+    Structure (maquette) :
+    - Page 1 : en-tete "ESG Risk Intelligence", contexte du dossier, score
+      (fond colore), signaux identifies (OUI/INCONNU, verbatim tronque a
+      200 caracteres), synthese (si result_v4.get("synthesis"), sinon
+      section absente — cf. grid_display.py pour le meme choix cote UI)
     - Page 2 : tableau des 12 questions + ligne de total
-    - Pages suivantes : détail par question ayant des preuves à montrer
-      (cf. _question_has_detail)
+    - Pages suivantes : detail par question, UNIQUEMENT OUI et INCONNU
+      (les NON ne sont plus detailles, cf. "Ce qu'il ne faut PAS faire")
+    - Pied de page "Confidentiel - Genere le [date]" sur toutes les pages
+      (cf. _GridV4PDF.footer)
 
     Retourne des bytes, prêts pour st.download_button.
     """
@@ -318,99 +318,108 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     score = scoring["score"]
     color = scoring["color"]
     mode_label = result_v4.get("reading_mode_label") or "-"
+    context = result_v4.get("context") or {}
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf = _GridV4PDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
 
-    # --- Page 1 : synthèse ---
+    # --- Page 1 : en-tete + contexte + score + signaux + synthese ---
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    title = f"ESG Risk Assessment - {project_name}" if project_name else "ESG Risk Assessment"
-    pdf.cell(0, 10, _safe(title), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, "ESG Risk Intelligence", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "B", 12)
+    subtitle = f"Evaluation ESG - {project_name}" if project_name else "Evaluation ESG"
+    pdf.cell(0, 8, _safe(subtitle), new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 6, f"Genere le : {datetime.now().strftime('%Y-%m-%d %H:%M')}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Genere le : {now_str}", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(4)
 
     # --- Contexte du dossier (BLOC D, CC-V4-11) : AVANT le score, cf.
-    # directive ("afficher ces 4 champs en en-tete du rapport, AVANT le
-    # score") — saisie manuelle analyste, jamais extraite du document.
-    context = result_v4.get("context")
+    # directive — saisie manuelle analyste, jamais extraite du document.
     if context:
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(0, 6, "Contexte du dossier", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 9)
-        pdf.cell(
-            0, 5, _safe(f"Classification Equator Principles : {context.get('ep_classification') or '-'}"),
-            new_x="LMARGIN", new_y="NEXT",
-        )
-        pdf.cell(
-            0, 5, _safe(f"Statut de sensibilite : {context.get('sensitivity') or '-'}"),
-            new_x="LMARGIN", new_y="NEXT",
-        )
-        pdf.cell(
-            0, 5, _safe(f"Montant du financement : {context.get('financing_amount') or '-'}"),
-            new_x="LMARGIN", new_y="NEXT",
-        )
-        pdf.cell(
-            0, 5, _safe(f"Role de CACIB : {context.get('cacib_role') or '-'}"),
-            new_x="LMARGIN", new_y="NEXT",
-        )
+        ctx_line = " | ".join(
+            str(v) for v in [
+                context.get("ep_classification"), context.get("sensitivity"),
+                context.get("financing_amount"), context.get("cacib_role"),
+            ] if v
+        ) or "-"
+        pdf.cell(0, 5, _safe(ctx_line), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 5, _safe(f"Mode : {mode_label}"), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(3)
 
+    # --- Score : fond colore (cf. directive, fpdf2 fill_color) ---
     rgb = _COLOR_RGB_V4.get(color, (100, 100, 100))
+    pdf.set_fill_color(*rgb)
+    pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", "B", 20)
-    pdf.set_text_color(*rgb)
-    pdf.cell(0, 12, _safe(f"Score : {score} / 100 - {color}"), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(0, 0, 0)
+    score_label = f"Score : {score} / 100 - {color}"
     if scoring.get("saturation"):
-        pdf.set_font("Helvetica", "I", 10)
-        pdf.cell(0, 6, "ROUGE - Eliminatoire (score plancher)", new_x="LMARGIN", new_y="NEXT")
+        score_label += " (Eliminatoire)"
+    pdf.cell(0, 14, _safe(score_label), new_x="LMARGIN", new_y="NEXT", fill=True, align="C")
+    pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
 
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 7, _safe(f"Mode de lecture : {mode_label}"), new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 7, f"Questions actives : {scoring['questions_active']} / 12", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, f"Questions actives : {scoring['questions_active']} / 12", new_x="LMARGIN", new_y="NEXT")
     if scoring["questions_na"] > 0:
-        pdf.cell(0, 7, f"Questions N/A : {scoring['questions_na']}", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Questions N/A : {scoring['questions_na']}", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(
-        0, 7, f"Plafond d'attenuation applique : {'Oui' if scoring['cap_applied'] else 'Non'}",
+        0, 6, f"Plafond d'attenuation : {'Oui' if scoring['cap_applied'] else 'Non'}",
         new_x="LMARGIN", new_y="NEXT",
     )
     pdf.ln(4)
 
-    risk_drivers = [
-        q for q in result_v4["questions"]
-        if q["status"] == "OUI" or (q.get("a_condition") == "r_non" and q["status"] == "NON")
-    ]
-    risk_drivers.sort(key=lambda q: q["penalty"])
-
+    # --- Signaux identifies (KPI, OUI + INCONNU) ---
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Risques identifies", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
-    if risk_drivers:
-        for q in risk_drivers:
-            mit_label = q.get("mitigation_label") or "-"
+    pdf.cell(0, 8, "Signaux identifies", new_x="LMARGIN", new_y="NEXT")
+
+    signal_questions = [q for q in result_v4["questions"] if q["status"] in ("OUI", "INCONNU")]
+    if not signal_questions:
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, "Aucun risque identifie.", new_x="LMARGIN", new_y="NEXT")
+    else:
+        for q in signal_questions:
+            net = q["penalty"] + q.get("gain", 0)
+            mit_label = q.get("mitigation_label")
+
+            pdf.set_font("Helvetica", "B", 10)
             pdf.multi_cell(
-                0, 6,
-                _safe(f"- {q['code']} - {q['sous_theme']} (penalite {q['penalty']}, mitigation {mit_label})"),
+                0, 6, _safe(f"- {q['code']} - {q['sous_theme']} ({net:+d} pts)"),
                 new_x="LMARGIN", new_y="NEXT",
             )
-    else:
-        pdf.cell(0, 6, "Aucun risque identifie.", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(3)
+            if mit_label:
+                pdf.set_font("Helvetica", "", 9)
+                pdf.cell(0, 5, _safe(f"  Mitigation : {mit_label}"), new_x="LMARGIN", new_y="NEXT")
 
-    inconnu_qs = [q for q in result_v4["questions"] if q["status"] == "INCONNU"]
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Non documente", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
-    if inconnu_qs:
-        for q in inconnu_qs:
-            pdf.multi_cell(0, 6, _safe(f"- {q['code']} - {q['sous_theme']}"), new_x="LMARGIN", new_y="NEXT")
-    else:
-        pdf.cell(0, 6, "Aucune question non documentee.", new_x="LMARGIN", new_y="NEXT")
+            ev_r = q.get("evidence_r")
+            verbatim = ev_r.get("passage") if ev_r else None
+            if verbatim:
+                # Tronque a 200 caracteres (maquette) — le verbatim complet
+                # reste disponible dans le detail par question, page 3+.
+                display = verbatim[:200] + "..." if len(verbatim) > 200 else verbatim
+                pdf.set_font("Helvetica", "I", 9)
+                pdf.set_text_color(90, 90, 90)
+                pdf.multi_cell(0, 5, _safe(f'  "{display}"'), new_x="LMARGIN", new_y="NEXT")
+                pdf.set_text_color(0, 0, 0)
+            pdf.ln(1)
+
+    # --- Synthese (optionnelle, absente du contrat result_v4 aujourd'hui —
+    # cf. grid_display.py pour la meme justification) ---
+    synthesis = result_v4.get("synthesis")
+    if synthesis:
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Synthese", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 6, _safe(synthesis), new_x="LMARGIN", new_y="NEXT")
 
     # --- Page 2 : tableau des 12 questions ---
     pdf.add_page()
@@ -460,8 +469,11 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
         new_x="LMARGIN", new_y="NEXT",
     )
 
-    # --- Pages suivantes : détail par question ---
-    detail_questions = [q for q in result_v4["questions"] if _question_has_detail(q)]
+    # --- Pages suivantes : détail par question — UNIQUEMENT OUI et INCONNU
+    # (cf. directive "Ne PAS inclure les questions NON dans les pages de
+    # détail du PDF"), contrairement à l'ancien filtre _question_has_detail
+    # qui incluait aussi un NON attesté.
+    detail_questions = [q for q in result_v4["questions"] if q["status"] in ("OUI", "INCONNU")]
     if detail_questions:
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 14)
@@ -469,11 +481,17 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
         pdf.ln(2)
 
         for q in detail_questions:
+            gain = q.get("gain", 0)
+            net = q["penalty"] + gain
             pdf.set_font("Helvetica", "B", 11)
             pdf.multi_cell(0, 7, _safe(f"{q['code']} - {q['sous_theme']}"), new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", "", 9)
             pdf.cell(0, 5, _safe(f"Statut : {q['status']}"), new_x="LMARGIN", new_y="NEXT")
             pdf.cell(0, 5, _safe(f"Mitigation : {q.get('mitigation_label') or '-'}"), new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(
+                0, 5, f"Penalite : {q['penalty']} | Gain : {gain:+d} | Net : {net}",
+                new_x="LMARGIN", new_y="NEXT",
+            )
             pdf.ln(1)
 
             ev_r = q.get("evidence_r")
@@ -535,112 +553,115 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     return bytes(pdf.output())
 
 
-# --- Excel : remplissages conditionnels (pénalité < 0 -> rouge clair, gain
-# > 0 -> vert clair) sur la feuille "Grille", cf. directive CC-V4-10. ---
+# --- Excel : remplissages conditionnels sur la colonne Statut de la
+# feuille "Grille" (maquette Elisa 2026-08-20) : OUI -> rouge clair,
+# NON -> vert clair, INCONNU -> jaune clair. ---
 _PENALTY_FILL_V4 = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
 _GAIN_FILL_V4 = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+_INCONNU_FILL_V4 = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+_STATUS_FILL_V4 = {"OUI": _PENALTY_FILL_V4, "NON": _GAIN_FILL_V4, "INCONNU": _INCONNU_FILL_V4}
+_WRAP_TOP_V4 = Alignment(wrap_text=True, vertical="top")
 
 
 def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx"):
-    """Génère un classeur Excel de la Grille V4 (12 questions).
+    """Génère un classeur Excel de la Grille V4 (12 questions), maquette
+    Elisa 2026-08-20.
 
     CHOIX: openpyxl comme l'export existant — pas de nouvelle dépendance.
     `filename` non utilisé (cf. build_grid_v4_pdf ci-dessus).
 
-    4 feuilles :
-    - Synthese  : score, couleur, mode, métriques agrégées
-    - Grille    : tableau des 12 questions, fond rouge/vert conditionnel
-    - Evidence  : une ligne par verbatim (risque/mitigation/défaillance)
-    - Qualifiants : champs non scorants (cf. grid_questions.QUALIFYING_FLAGS)
+    3 feuilles (maquette — remplace l'ancien découpage à 4 feuilles
+    Synthese/Grille/Evidence/Qualifiants) :
+    - Synthese : score, contexte, mode, métriques agrégées + tableau des
+      signaux identifiés (OUI/INCONNU), verbatim TRONQUÉ à 200 caractères
+    - Grille   : tableau des 12 questions, fond conditionnel par Statut
+      (cf. _STATUS_FILL_V4)
+    - Detail   : une ligne par question OUI/INCONNU, verbatims COMPLETS,
+      jamais tronqués (cf. directive : "l'analyste veut pouvoir
+      copier-coller"), colonnes larges + wrap_text
 
     Retourne des bytes, prêts pour st.download_button.
     """
     scoring = result_v4["scoring"]
+    context = result_v4.get("context") or {}
     wb = Workbook()
 
     # --- Feuille Synthese ---
     ws1 = wb.active
     ws1.title = "Synthese"
-    # Contexte du dossier (BLOC D, CC-V4-11) : AVANT le score, cf.
-    # directive — saisie manuelle analyste, jamais extraite du document.
-    context = result_v4.get("context") or {}
-    summary_rows = [
-        ("Projet", project_name or "-"),
-        ("Genere le", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ("Grille", result_v4.get("grid_version") or "-"),
-        ("Mode de lecture", result_v4.get("reading_mode_label") or "-"),
-        ("Classification Equator Principles", context.get("ep_classification") or "-"),
-        ("Statut de sensibilite", context.get("sensitivity") or "-"),
-        ("Montant du financement", context.get("financing_amount") or "-"),
-        ("Role de CACIB", context.get("cacib_role") or "-"),
-        ("Score (/100)", scoring["score"]),
-        ("Couleur", scoring["color"]),
-        ("Saturation (score plancher)", "Oui" if scoring.get("saturation") else "Non"),
-        ("Questions actives", scoring["questions_active"]),
-        ("Questions N/A", scoring["questions_na"]),
-        ("Penalite totale", scoring["total_penalty"]),
-        ("Gain total (brut)", scoring["total_gain"]),
-        ("Gain total (plafonne)", scoring["total_gain_capped"]),
-        ("Plafond d'attenuation applique", "Oui" if scoring["cap_applied"] else "Non"),
-    ]
-    for label, value in summary_rows:
-        ws1.append([label, value])
-    for row in ws1.iter_rows(min_row=1, max_row=len(summary_rows), min_col=1, max_col=1):
-        row[0].font = Font(bold=True)
-    _autofit(ws1, [32, 40])
+
+    ws1.append(["ESG Risk Intelligence - Evaluation ESG"])
+    ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True, size=14)
+    ws1.append([project_name or "-", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    ws1.append([])
+
+    ws1.append(["CONTEXTE DU DOSSIER"])
+    ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True)
+    _write_header_row(ws1, ws1.max_row + 1, ["EP", "Sensibilite", "Montant", "Role"])
+    ws1.append([
+        context.get("ep_classification") or "-", context.get("sensitivity") or "-",
+        context.get("financing_amount") or "-", context.get("cacib_role") or "-",
+    ])
+    ws1.append([])
+
+    ws1.append([f"SCORE : {scoring['score']} / 100 - {scoring['color']}"])
+    ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True, size=13)
+    ws1.append([f"Mode de lecture : {result_v4.get('reading_mode_label') or '-'}"])
+    ws1.append([f"Questions actives : {scoring['questions_active']} / 12"])
+    ws1.append([f"Plafond d'attenuation applique : {'Oui' if scoring['cap_applied'] else 'Non'}"])
+    ws1.append([])
+
+    ws1.append(["SIGNAUX IDENTIFIES"])
+    ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True)
+    _write_header_row(ws1, ws1.max_row + 1, ["Code", "Sous-theme", "Penalite", "Verbatim (tronque)"])
+    signal_questions = [q for q in result_v4["questions"] if q["status"] in ("OUI", "INCONNU")]
+    if not signal_questions:
+        ws1.append(["-", "Aucun risque identifie.", "-", "-"])
+    else:
+        for q in signal_questions:
+            ev_r = q.get("evidence_r")
+            verbatim = ev_r.get("passage") if ev_r else None
+            display = (verbatim[:200] + "...") if verbatim and len(verbatim) > 200 else (verbatim or "-")
+            ws1.append([q["code"], q["sous_theme"], q["penalty"], display])
+    _autofit(ws1, [30, 30, 14, 70])
 
     # --- Feuille Grille ---
     ws2 = wb.create_sheet("Grille")
-    _write_header_row(ws2, 1, [
-        "Code", "Categorie", "Sous-theme", "Statut", "Mitigation Status",
-        "Mitigation Label", "Penalite", "Gain", "Net", "Silence Type", "Atteste", "Verrou",
-    ])
+    _write_header_row(ws2, 1, ["Code", "Sous-theme", "Statut", "Mitigation", "Penalite", "Gain", "Net"])
     for q in result_v4["questions"]:
         gain = q.get("gain", 0)
         ws2.append([
-            q["code"], q["category"], q["sous_theme"], q["status"],
-            q.get("mitigation_status") or "-", q.get("mitigation_label") or "-",
+            q["code"], q["sous_theme"], q["status"], q.get("mitigation_label") or "-",
             q["penalty"], gain, q["penalty"] + gain,
-            q.get("silence_type") or "-",
-            "Oui" if q.get("atteste") else "Non",
-            "Oui" if q.get("verrou_applique") else "Non",
         ])
-        row_idx = ws2.max_row
-        if q["penalty"] < 0:
-            ws2.cell(row=row_idx, column=7).fill = _PENALTY_FILL_V4
-        if gain > 0:
-            ws2.cell(row=row_idx, column=8).fill = _GAIN_FILL_V4
-    _autofit(ws2, [8, 10, 34, 10, 20, 24, 10, 8, 8, 12, 10, 10])
+        fill = _STATUS_FILL_V4.get(q["status"])
+        if fill:
+            ws2.cell(row=ws2.max_row, column=3).fill = fill
+    _autofit(ws2, [8, 34, 10, 24, 10, 8, 8])
 
-    # --- Feuille Evidence ---
-    ws3 = wb.create_sheet("Evidence")
-    _write_header_row(ws3, 1, ["Code", "Type", "Page", "Passage", "Sujet"])
+    # --- Feuille Detail (OUI/INCONNU uniquement, verbatims complets) ---
+    ws3 = wb.create_sheet("Detail")
+    _write_header_row(ws3, 1, [
+        "Code", "Statut", "Verbatim risque", "Page", "Verbatim mitigation",
+        "Defaillance", "Confiance",
+    ])
     for q in result_v4["questions"]:
-        qualifying = q.get("qualifying") or {}
-        sujet = "Preteur" if qualifying.get("subject_filter") == "lender" else "SPV"
-
-        ev_r = q.get("evidence_r")
-        if ev_r and ev_r.get("passage"):
-            ws3.append([q["code"], "risque", ev_r.get("page") or "-", ev_r["passage"], sujet])
-
-        ev_a = q.get("evidence_a")
-        if ev_a and ev_a.get("verbatim_mesure"):
-            ws3.append([q["code"], "mitigation", ev_a.get("page") or "-", ev_a["verbatim_mesure"], sujet])
-        if ev_a and ev_a.get("verbatim_defaillance"):
-            ws3.append([q["code"], "defaillance", ev_a.get("page") or "-", ev_a["verbatim_defaillance"], sujet])
-    _autofit(ws3, [10, 14, 8, 90, 10])
-
-    # --- Feuille Qualifiants ---
-    ws4 = wb.create_sheet("Qualifiants")
-    _write_header_row(ws4, 1, ["Code", "Sous-theme", "Champ", "Valeur"])
-    for q in result_v4["questions"]:
-        qualifying = q.get("qualifying")
-        if not qualifying:
+        if q["status"] not in ("OUI", "INCONNU"):
             continue
-        for k, v in qualifying.items():
-            if v and v is not True:
-                ws4.append([q["code"], q["sous_theme"], k, v])
-    _autofit(ws4, [10, 34, 22, 60])
+        ev_r = q.get("evidence_r") or {}
+        ev_a = q.get("evidence_a") or {}
+        ws3.append([
+            q["code"], q["status"],
+            ev_r.get("passage") or "-", ev_r.get("page") or "-",
+            ev_a.get("verbatim_mesure") or "-", ev_a.get("verbatim_defaillance") or "-",
+            q.get("confidence_note") or "-",
+        ])
+        row_idx = ws3.max_row
+        # Verbatims complets (pas tronqués, cf. directive) — wrap_text pour
+        # rester lisible malgré la longueur.
+        for col in (3, 5, 6, 7):
+            ws3.cell(row=row_idx, column=col).alignment = _WRAP_TOP_V4
+    _autofit(ws3, [10, 10, 60, 8, 60, 60, 40])
 
     buffer = io.BytesIO()
     wb.save(buffer)
