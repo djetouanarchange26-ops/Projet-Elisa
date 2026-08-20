@@ -2599,15 +2599,21 @@ def test_page_marker_extraction():
     Ce test simule le texte marqué que produirait _extract_uploaded_text()
     (app.py n'est pas importable ici — module Streamlit avec des appels
     st.* au niveau module, cf. absence d'"import app" ailleurs dans ce
-    fichier) et vérifie 3 choses : (a) le marqueur survit intact au vrai
+    fichier) et vérifie 4 choses : (a) le marqueur survit intact au vrai
     search.chunk_text() (ni avalé par le filtre boilerplate, ni cassé par
     la tokenisation mot-à-mot), (b) grid_prompts.get_extraction_prompt()
     documente la consigne de lecture du marqueur, (c) sur le pipeline
     complet (search.chunk_text -> grid_analyze réel, LLM monkey-patché),
     si le LLM lit correctement le marqueur, la page atteint bien
-    evidence_r["page"] — pas une preuve qu'un LLM réel suivra la
-    consigne, seulement que la donnée n'est plus jetée en route
-    (cf. limite déjà documentée dans grid_prompts._PAGE_RULE)."""
+    evidence_r["page"], (d) evidence_a["page"] (mitigation) hérite de
+    evidence_r["page"] plutôt que de rester None — cf. diagnostic
+    "mitigation sans page" (2026-08-20) : la Passe 2 (qualification) ne
+    voit jamais le marqueur ni les chunks bruts, uniquement le verbatim
+    déjà extrait par la Passe 1, donc structurellement la même page.
+    Rien de tout ceci ne prouve qu'un LLM réel suivra la consigne de
+    lecture du marqueur — seulement que la donnée n'est plus jetée en
+    route une fois qu'il la fournit (cf. limite déjà documentée dans
+    grid_prompts._PAGE_RULE)."""
     print("\n--- 2.5c Marqueur [PAGE:N] (diagnostic page '?' Aysha Wind) ---\n")
 
     import json
@@ -2656,13 +2662,18 @@ def test_page_marker_extraction():
 
     def _fake_dispatch(backend, prompt, model, options, timeout, response_format=None):
         if "VERBATIM EXTRAIT" in prompt:
-            # Passe 2 (qualification) — statut NON, non pertinent ici :
-            # seul le page-threading de la Passe 1 (evidence_r) est testé.
+            # Passe 2 (qualification) — status=OUI avec une mesure de
+            # mitigation, pour vérifier que evidence_a["page"] hérite de
+            # evidence_r["page"] (diagnostic "mitigation sans page",
+            # 2026-08-20) : la Passe 2 ne voit jamais le marqueur
+            # [PAGE:N], seulement le verbatim déjà extrait par la Passe 1.
             return json.dumps({
-                "code": "A.1.1", "status": "NON", "confidence": "HIGH",
-                "mitigation_status": None, "verbatim_r": None,
-                "verbatim_a_mesure": None, "verbatim_a_defaillance": None,
-                "brief_r": "hors sujet pour ce test", "brief_a": None,
+                "code": "A.1.1", "status": "OUI", "confidence": "HIGH",
+                "mitigation_status": "OUI_PROUVEE",
+                "verbatim_r": "A strike occurred on site in March 2025.",
+                "verbatim_a_mesure": "A mediation agreement was signed with local unions.",
+                "verbatim_a_defaillance": None,
+                "brief_r": "greve confirmee", "brief_a": "accord signe",
             })
         return json.dumps({
             "code": "A.1.1", "found": True,
@@ -2682,6 +2693,9 @@ def test_page_marker_extraction():
             _test("Pipeline complet : evidence_r['page'] renseigné (fini le 'page ?' systématique)",
                   q["evidence_r"] is not None and q["evidence_r"]["page"] == 2,
                   f"Obtenu : {q.get('evidence_r')!r}")
+            _test("Pipeline complet : evidence_a['page'] hérite de evidence_r['page'] (fini 'mitigation sans page')",
+                  q["evidence_a"] is not None and q["evidence_a"]["page"] == 2,
+                  f"Obtenu : {q.get('evidence_a')!r}")
     finally:
         llm_backend._dispatch = _orig_dispatch
         config.GRID_V4_ENABLED = _orig_enabled

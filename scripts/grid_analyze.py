@@ -255,7 +255,13 @@ def _answer_for_question(question, question_chunks, document_type):
         evidence_a = {
             "verbatim_mesure": qualified.get("verbatim_a_mesure"),
             "verbatim_defaillance": qualified.get("verbatim_a_defaillance"),
-            "page": None,
+            # Hérite de la page R (evidence_r), pas de page propre possible :
+            # la Passe 2 ne voit JAMAIS les chunks/marqueurs [PAGE:N] bruts,
+            # seulement le verbatim déjà extrait par la Passe 1 (cf.
+            # get_qualification_prompt) — verbatim_a_mesure/_defaillance en
+            # sont des sous-extraits, donc structurellement sur la même page
+            # que evidence_r. Diagnostic "mitigation sans page" (2026-08-20).
+            "page": evidence_r["page"],
         }
 
     confidence_note = qualified.get("brief_r")
