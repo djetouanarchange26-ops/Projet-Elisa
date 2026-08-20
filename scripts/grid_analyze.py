@@ -57,6 +57,16 @@ _answer_for_question pour le détail) :
   3. Passe 2 injoignable/inexploitable (found=true en Passe 1) -> status
      OUI, confidence LOW (biais R1 : en cas de doute, signaler le risque),
      pas de mitigation.
+
+SYNTHÈSE FINALE (directive "évolutions pipeline ESG/risk", 2026-08-20) :
+troisième étape ajoutée APRÈS le scoring, dans analyze_grid() — cf.
+_generate_synthesis. Un seul appel LLM texte libre par dossier (pas de
+JSON, contrairement aux 2 passes ci-dessus), sur le résultat déjà
+assemblé (grid_result.build_grid_result), jamais sur les chunks bruts.
+N'affecte JAMAIS le score (déjà figé avant l'appel) — fail-open
+indépendant (config.GRID_SYNTHESIS_ENABLED), échec -> result["synthesis"]
+= None, le reste du résultat reste inchangé. Prompt et mise en forme des
+questions OUI/INCONNU : grid_prompts.get_synthesis_prompt.
 """
 
 import logging
@@ -80,6 +90,14 @@ logger = logging.getLogger(__name__)
 # existant, seulement un cas particulier au-dessus) dans le docstring de
 # grid_prompts.py, section "DÉCISION R5".
 _SILENCE_CONFIRMS_ABSENCE = {"B.3.1", "B.3.2"}
+
+# Texte canonique affiché (UI/export/synthèse) quand une question n'a
+# STRICTEMENT rien trouvé (found=false ou aucun chunk candidat) — cf.
+# directive "gestion INCONNU" (2026-08-20), section "Affichage attendu" :
+# jamais de justification inventée sur une absence de passage, seulement
+# ce texte, tel quel, partout où confidence_note est affiché ou envoyé au
+# LLM de synthèse (cf. grid_prompts._format_inconnu_block).
+_NO_ELEMENT_FOUND = "Aucun élément n'a été trouvé."
 
 
 def _silence_status(question):
@@ -151,7 +169,7 @@ def _answer_for_question(question, question_chunks, document_type):
 
     if not question_chunks:
         logger.info("grid_analyze: %s — aucun passage candidat, repli sur la règle de silence (R5).", code)
-        return _silence_fallback(question, "Aucun passage pertinent trouvé dans le document sur ce sujet.")
+        return _silence_fallback(question, _NO_ELEMENT_FOUND)
 
     context_texts = [c["text"] for c in question_chunks]
 
@@ -172,8 +190,18 @@ def _answer_for_question(question, question_chunks, document_type):
         extracted = {"found": True, "verbatim": raw_joined, "page": None, "subject": "AMBIGUOUS", "brief": None}
 
     if not extracted["found"]:
+        # CHOIX (directive "gestion INCONNU", 2026-08-20) : confidence_note
+        # reste le texte canonique _NO_ELEMENT_FOUND même si le LLM a
+        # fourni un `brief` — on n'affiche jamais une justification
+        # inventée/reformulée par le modèle sur une ABSENCE de passage,
+        # seulement le fait brut. Le `brief` éventuel est conservé en log
+        # (utile en debug) mais jamais montré à l'analyste ni à la
+        # synthèse finale.
+        if extracted.get("brief"):
+            logger.info("grid_analyze: %s — Passe 1 found=false, brief LLM (log seulement) : %s",
+                        code, extracted["brief"])
         logger.info("grid_analyze: %s — Passe 1 : rien trouvé (found=false), repli sur R5.", code)
-        return _silence_fallback(question, extracted.get("brief") or "Aucun passage pertinent trouvé (Passe 1).")
+        return _silence_fallback(question, _NO_ELEMENT_FOUND)
 
     # --- Passe 2 — QUALIFICATION (uniquement si found=true) ---
     qualification_prompt = grid_prompts.get_qualification_prompt(
@@ -269,6 +297,33 @@ def _na_answer(question):
     }
 
 
+def _generate_synthesis(result):
+    """Passe de synthèse finale (directive "évolutions pipeline ESG/risk",
+    2026-08-20) — UN SEUL appel LLM par dossier, APRÈS le scoring, texte
+    libre (response_format=None, contrairement aux 2 passes JSON par
+    question). N'affecte JAMAIS le score : appelée une fois que `result`
+    (donc `result["scoring"]`) est déjà entièrement calculé.
+
+    Fail-open (ADR-002) : config.GRID_SYNTHESIS_ENABLED=False ou appel LLM
+    injoignable/vide -> retourne None, ne lève jamais, ne modifie ni les
+    questions ni le scoring déjà assemblés dans `result`. Un seul appel
+    (pas de retry) — cf. directive, section "Robustesse".
+
+    config_key="deep_synthesize" (config.OLLAMA_CONFIGS) : réutilisé tel
+    quel depuis deep_analysis.run_pass3 (même type de tâche — 3-5 phrases
+    de synthèse en français), pas de nouvelle clé de config créée.
+    """
+    if not config.GRID_SYNTHESIS_ENABLED:
+        return None
+
+    prompt = grid_prompts.get_synthesis_prompt(result)
+    synthesis = llm_backend.call_llm(prompt, config_key="deep_synthesize", temperature=0.2, timeout=150)
+    if not synthesis:
+        logger.warning("grid_analyze: synthèse finale injoignable ou vide — result['synthesis']=None.")
+        return None
+    return synthesis
+
+
 def analyze_grid(chunks, na_modules=None, document_type=1, context=None):
     """Analyse un document via la Grille V4 (12 questions).
 
@@ -290,8 +345,11 @@ def analyze_grid(chunks, na_modules=None, document_type=1, context=None):
         Simple pass-through jusqu'au résultat final — jamais lu ni utilisé
         ici, jamais transmis au LLM, jamais dans le calcul du score.
 
-    Retourne un résultat V4 complet (cf. grid_result.build_grid_result),
-    ou None si le pipeline Grille est désactivé.
+    Retourne un résultat V4 complet (cf. grid_result.build_grid_result) AVEC
+    une clé "synthesis" ajoutée (str|None, cf. _generate_synthesis — passe
+    de synthèse finale exécutée ICI, après le scoring, directive
+    "évolutions pipeline ESG/risk" 2026-08-20), ou None si le pipeline
+    Grille est désactivé.
 
     CHOIX: `config.GRID_V4_ENABLED` (renommé depuis GRID_V3_ENABLED,
     CC-V4-08) gouverne le pipeline Grille toutes versions confondues —
@@ -319,7 +377,12 @@ def analyze_grid(chunks, na_modules=None, document_type=1, context=None):
         question_results[code] = _answer_for_question(question, question_chunks, document_type)
 
     scoring = grid_scoring.compute_grid_score(question_results, document_type=document_type)
-    return grid_result.build_grid_result(question_results, scoring, context=context)
+    result = grid_result.build_grid_result(question_results, scoring, context=context)
+    # Synthèse finale : APRÈS le scoring, sur le résultat déjà assemblé
+    # (result["scoring"] figé) — cf. _generate_synthesis. Ne relit ni ne
+    # modifie question_results/scoring ci-dessus.
+    result["synthesis"] = _generate_synthesis(result)
+    return result
 
 
 def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override=None, context=None):

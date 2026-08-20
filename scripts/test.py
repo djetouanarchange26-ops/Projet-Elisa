@@ -212,6 +212,12 @@ def test_unit():
     # backend LLM monkey-patché (même idiome que 1.5), pas d'appel réseau réel.
     test_grid_analyze_v4()
 
+    # 1.23 Synthèse finale post-scoring (directive "évolutions pipeline
+    # ESG/risk", 2026-08-20) — prompt (déterministe) puis intégration
+    # (backend LLM monkey-patché).
+    test_grid_synthesis_prompt()
+    test_grid_analyze_synthesis()
+
     # 1.16 Calibration V4 sur les 4 dossiers annotés (directive CC-V4-07) —
     # purement déterministe (grid_scoring.py seul), pas de LLM.
     test_calibration_cbg()
@@ -1637,6 +1643,14 @@ def test_grid_analyze_v4():
     # référence") apparaît dans les DEUX passes (question_r est injecté
     # dans les deux templates).
     def _fake_dispatch(backend, prompt, model, options, timeout, response_format=None):
+        # Synthèse finale (directive "évolutions pipeline ESG/risk",
+        # 2026-08-20) : analyze_grid() appelle désormais aussi cette passe
+        # à la fin — cf. test_grid_analyze_synthesis pour les tests dédiés,
+        # ici on répond juste un texte plausible pour ne pas polluer
+        # result["synthesis"] avec le JSON destiné aux 2 autres passes.
+        if "analyste risque chargé de rédiger une synthèse" in prompt:
+            return "Synthèse factice (test 1.15, non vérifiée ici)."
+
         is_qualification = "VERBATIM EXTRAIT" in prompt
         is_b31 = "Absence de données de référence" in prompt
 
@@ -1711,6 +1725,14 @@ def test_grid_analyze_v4():
         b21_empty = next(q for q in result_empty["questions"] if q["code"] == "B.2.1")
         _test("Aucun chunk -> repli silence (B.2.1, état) -> status='INCONNU'",
               b21_empty["status"] == "INCONNU", f"Obtenu : {b21_empty['status']!r}")
+        # Directive "gestion INCONNU" (2026-08-20) : texte d'affichage
+        # canonique, jamais de justification inventée sur une absence.
+        _test("Aucun chunk -> confidence_note = texte canonique 'Aucun élément n'a été trouvé.'",
+              b21_empty["confidence_note"] == "Aucun élément n'a été trouvé.",
+              f"Obtenu : {b21_empty['confidence_note']!r}")
+        _test("INCONNU (B.2.1) -> pénalité 0 et gain 0 dans le résultat assemblé",
+              b21_empty["penalty"] == 0 and b21_empty.get("gain", 0) == 0,
+              f"Obtenu : penalty={b21_empty['penalty']}, gain={b21_empty.get('gain')}")
 
         try:
             grid_result.validate_grid_result(result_empty)
@@ -1721,6 +1743,187 @@ def test_grid_analyze_v4():
     finally:
         llm_backend._dispatch = _orig_dispatch
         config.GRID_V4_ENABLED = _orig_enabled
+
+
+def test_grid_synthesis_prompt():
+    """Tests du prompt de synthèse finale (grid_prompts.get_synthesis_prompt),
+    directive "évolutions pipeline ESG/risk" (2026-08-20) — purement
+    déterministe (construction de chaîne), pas de LLM. Réutilise
+    _build_fake_v4_result() (test 1.17) plutôt qu'un nouveau générateur."""
+    print("\n--- 1.23a Prompt de synthèse finale (grid_prompts.py) ---\n")
+
+    import grid_prompts
+
+    result = _build_fake_v4_result()
+    prompt = grid_prompts.get_synthesis_prompt(result)
+
+    _test("Prompt synthèse : rappelle qu'INCONNU ne signifie jamais NON",
+          "INCONNU NE SIGNIFIE JAMAIS NON" in prompt)
+    _test("Prompt synthèse : contient le score final",
+          f"{result['scoring']['score']}/100" in prompt,
+          f"score={result['scoring']['score']}")
+    _test("Prompt synthèse : contient la couleur finale",
+          result["scoring"]["color"] in prompt)
+
+    # A.1.1 = OUI dans _build_fake_v4_result -> doit apparaître avec son verbatim.
+    a11 = next(q for q in result["questions"] if q["code"] == "A.1.1")
+    _test("Prompt synthèse : code OUI (A.1.1) présent", "A.1.1" in prompt)
+    _test("Prompt synthèse : verbatim du OUI présent",
+          a11["evidence_r"]["passage"] in prompt)
+
+    # B.2.1 = INCONNU (silence, evidence_r=None) dans _build_fake_v4_result
+    # -> texte canonique, jamais présenté comme une conclusion.
+    b21 = next(q for q in result["questions"] if q["code"] == "B.2.1")
+    _test("B.2.1 (résultat factice) -> status=INCONNU",
+          b21["status"] == "INCONNU", f"Obtenu : {b21['status']!r}")
+    _test("Prompt synthèse : B.2.1 INCONNU présent avec le texte canonique",
+          "B.2.1" in prompt and "Aucun élément n'a été trouvé." in prompt)
+
+    # Les NON ne sont jamais détaillés dans le prompt (hors sujet pour une
+    # synthèse de risque, cf. directive "coût / taille du contexte") —
+    # B.1.1 = NON dans _build_fake_v4_result, ne doit apparaître nulle part.
+    _test("Prompt synthèse : ne détaille pas les NON (hors sujet)",
+          "B.1.1" not in prompt)
+
+
+def test_grid_analyze_synthesis():
+    """Tests d'intégration de la passe de synthèse finale dans l'orchestrateur
+    (grid_analyze.analyze_grid -> _generate_synthesis), directive "évolutions
+    pipeline ESG/risk" (2026-08-20). Backend LLM monkey-patché, pas d'appel
+    réseau réel — même idiome que test_grid_analyze_v4 (1.15)."""
+    print("\n--- 1.23b Intégration synthèse finale (grid_analyze.py) ---\n")
+
+    import json as json_module
+
+    import config
+    import llm_backend
+    import grid_analyze
+
+    _SYNTHESIS_MARKER = "analyste risque chargé de rédiger une synthèse"
+    _orig_dispatch = llm_backend._dispatch
+    _orig_v4_enabled = config.GRID_V4_ENABLED
+    _orig_synth_enabled = config.GRID_SYNTHESIS_ENABLED
+    config.GRID_V4_ENABLED = True
+
+    # --- 6. Échec de l'appel LLM de synthèse -> analyse et score restent
+    # disponibles (fail-open, ne modifie ni les questions ni le score déjà
+    # calculés avant cet appel). ---
+    def _fake_dispatch_synthesis_fails(backend, prompt, model, options, timeout, response_format=None):
+        if _SYNTHESIS_MARKER in prompt:
+            raise RuntimeError("simulated LLM outage (synthesis)")
+        return json_module.dumps({
+            "code": "X", "found": False, "verbatim": None, "page": None,
+            "subject": None, "brief": None,
+        })
+
+    config.GRID_SYNTHESIS_ENABLED = True
+    llm_backend._dispatch = _fake_dispatch_synthesis_fails
+    try:
+        result_fail = grid_analyze.analyze_grid([], document_type=1)
+        _test("Échec appel LLM synthèse -> result['synthesis'] est None (fail-open)",
+              result_fail["synthesis"] is None)
+        # Aucun chunk -> silence sur les 12 questions : B.3.1/B.3.2 = OUI
+        # (_SILENCE_CONFIRMS_ABSENCE, le silence EST le risque qu'elles
+        # posent), -15 chacune, le reste = NON/INCONNU sans pénalité ->
+        # score = 100 - 15 - 15 = 70. Valeur précise plutôt qu'un simple
+        # "not None" : prouve que le scoring a bien tourné normalement,
+        # pas juste qu'un champ existe.
+        _test("Échec appel LLM synthèse -> le score reste disponible et correct",
+              result_fail["scoring"]["score"] == 70, f"Obtenu : {result_fail['scoring']['score']}")
+        _test("Échec appel LLM synthèse -> les 12 questions restent disponibles",
+              len(result_fail["questions"]) == 12, f"Obtenu : {len(result_fail['questions'])}")
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+
+    # --- GRID_SYNTHESIS_ENABLED=False -> aucun appel de synthèse (le flag
+    # coupe la passe indépendamment de GRID_V4_ENABLED). ---
+    _synthesis_calls_when_disabled = {"n": 0}
+
+    def _fake_dispatch_count_synthesis(backend, prompt, model, options, timeout, response_format=None):
+        if _SYNTHESIS_MARKER in prompt:
+            _synthesis_calls_when_disabled["n"] += 1
+            return "ne devrait jamais être appelé"
+        return json_module.dumps({
+            "code": "X", "found": False, "verbatim": None, "page": None,
+            "subject": None, "brief": None,
+        })
+
+    config.GRID_SYNTHESIS_ENABLED = False
+    llm_backend._dispatch = _fake_dispatch_count_synthesis
+    try:
+        result_disabled = grid_analyze.analyze_grid([], document_type=1)
+        _test("GRID_SYNTHESIS_ENABLED=False -> result['synthesis'] est None",
+              result_disabled["synthesis"] is None)
+        _test("GRID_SYNTHESIS_ENABLED=False -> aucun appel LLM de synthèse",
+              _synthesis_calls_when_disabled["n"] == 0,
+              f"Obtenu : {_synthesis_calls_when_disabled['n']} appel(s)")
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+
+    # --- 4/7/8 : dossier avec un OUI -> synthèse générée, UN SEUL appel,
+    # généré APRÈS le scoring (le score capturé dans le prompt doit
+    # correspondre au score réellement calculé pour ce résultat, pas à un
+    # score par défaut/vide — la seule façon d'avoir le bon score dans le
+    # prompt est que le scoring ait déjà tourné). ---
+    _captured_synthesis_prompts = []
+
+    def _fake_dispatch_ok(backend, prompt, model, options, timeout, response_format=None):
+        if _SYNTHESIS_MARKER in prompt:
+            _captured_synthesis_prompts.append(prompt)
+            return "Synthèse factice générée pour le test."
+
+        is_qualification = "VERBATIM EXTRAIT" in prompt
+        if not is_qualification:
+            if "Blocage physique du site" in prompt:  # A.1.1 (Passe 1)
+                return json_module.dumps({
+                    "code": "A.1.1", "found": True, "verbatim": "greve active sur le site",
+                    "page": 5, "subject": "SPV", "brief": "greve en cours",
+                })
+            return json_module.dumps({
+                "code": "X", "found": False, "verbatim": None, "page": None,
+                "subject": None, "brief": None,
+            })
+        # Passe 2 — uniquement atteinte pour A.1.1 (found=True ci-dessus)
+        return json_module.dumps({
+            "code": "A.1.1", "status": "OUI", "confidence": "HIGH",
+            "mitigation_status": "NON_INTENTION",
+            "verbatim_r": "greve active sur le site",
+            "verbatim_a_mesure": None, "verbatim_a_defaillance": None,
+            "brief_r": "greve en cours", "brief_a": None,
+        })
+
+    chunks = [{"text": "Passage générique pertinent pour l'analyse du projet.", "page": 5}]
+
+    config.GRID_SYNTHESIS_ENABLED = True
+    llm_backend._dispatch = _fake_dispatch_ok
+    try:
+        result_ok = grid_analyze.analyze_grid(chunks, document_type=1)
+
+        _test("Dossier avec un OUI -> synthèse générée (non None)",
+              result_ok["synthesis"] == "Synthèse factice générée pour le test.",
+              f"Obtenu : {result_ok['synthesis']!r}")
+        _test("Un seul appel de synthèse par dossier",
+              len(_captured_synthesis_prompts) == 1,
+              f"Obtenu : {len(_captured_synthesis_prompts)} appel(s)")
+
+        a11_ok = next(q for q in result_ok["questions"] if q["code"] == "A.1.1")
+        _test("A.1.1 (fake dispatch) -> status=OUI",
+              a11_ok["status"] == "OUI", f"Obtenu : {a11_ok['status']!r}")
+
+        prompt_used = _captured_synthesis_prompts[0]
+        _test("Synthèse générée APRÈS le scoring (score du résultat = score dans le prompt)",
+              f"{result_ok['scoring']['score']}/100" in prompt_used,
+              f"Score attendu dans le prompt : {result_ok['scoring']['score']}/100")
+
+        # --- 2. Un critère NON avec preuve (silence événement) ne doit pas
+        # devenir INCONNU. ---
+        a12 = next(q for q in result_ok["questions"] if q["code"] == "A.1.2")
+        _test("A.1.2 (evenement, silence) -> NON, jamais INCONNU",
+              a12["status"] == "NON", f"Obtenu : {a12['status']!r}")
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+        config.GRID_V4_ENABLED = _orig_v4_enabled
+        config.GRID_SYNTHESIS_ENABLED = _orig_synth_enabled
 
 
 # ============================================================================

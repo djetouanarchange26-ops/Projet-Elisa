@@ -622,3 +622,146 @@ def parse_qualification_response(raw_response):
         "brief_r": (parsed.get("brief_r") or "").strip() or None,
         "brief_a": (parsed.get("brief_a") or "").strip() or None,
     }
+
+
+# ============================================================================
+# SYNTHÈSE FINALE (post-scoring, un seul appel/dossier, texte libre)
+# ============================================================================
+# Directive "évolutions pipeline ESG/risk" (2026-08-20) : dernière étape du
+# pipeline, APRÈS grid_scoring.compute_grid_score() — reçoit le résultat
+# déjà assemblé (grid_result.build_grid_result), n'appelle JAMAIS le LLM
+# pendant l'extraction/le scoring eux-mêmes (inchangés). Réutilise
+# llm_backend.call_llm() tel quel (response_format=None, texte libre —
+# contrairement à l'extraction/qualification JSON ci-dessus) et le
+# config_key "deep_synthesize" déjà calibré pour une tâche identique
+# (3-5 phrases de synthèse en français, cf. deep_analysis.run_pass3 /
+# config.OLLAMA_CONFIGS) — pas de nouvelle clé de config.
+#
+# CHOIX: seules les questions OUI/INCONNU sont envoyées au LLM (jamais les
+# NON/NA, ni les chunks bruts du rapport) — budget indicatif ~2000 tokens
+# en entrée (cf. directive, section "Coût / taille du contexte"), verbatims
+# tronqués à 300 caractères. Un NON n'a rien à contribuer à une synthèse de
+# risque (par construction, un NON = absence établie, hors sujet), un
+# INCONNU y contribue explicitement car "INCONNU ne signifie jamais NON"
+# est la règle la plus facile à violer par un LLM qui n'a jamais vu la
+# distinction posée noir sur blanc.
+
+_SYNTHESIS_PROMPT = """Tu es un analyste risque chargé de rédiger une synthèse concise d'un dossier ESG.
+
+Tu dois UNIQUEMENT utiliser les informations fournies ci-dessous. N'invente aucune information, ne déduis jamais une absence de risque à partir de l'absence de données, et ne cherche pas à compléter ce qui manque.
+
+Un critère OUI correspond à un risque ou sujet identifié et documenté par les éléments fournis.
+Un critère NON correspond à une absence de risque explicitement établie par le rapport (non listés ci-dessous, {n_non} au total sur les 12 critères de la grille — hors sujet pour cette synthèse).
+Un critère INCONNU signifie que le rapport ne contient pas suffisamment d'informations pour conclure. INCONNU NE SIGNIFIE JAMAIS NON : si aucun élément n'a été trouvé pour un critère INCONNU, ne cherche pas à déduire une conclusion, indique simplement qu'aucun élément n'a été trouvé si ce point est pertinent pour la synthèse.
+
+=== CONTEXTE DU DOSSIER ===
+{context_block}
+
+=== SCORE FINAL ===
+{score}/100 - {color}
+
+=== RISQUES IDENTIFIÉS (OUI) ===
+{oui_block}
+
+=== POINTS NON DOCUMENTÉS (INCONNU) ===
+{inconnu_block}
+
+Rédige une synthèse de 3 à 5 phrases MAXIMUM, en français, destinée à un analyste risque ou à un comité de crédit qui ne connaît pas nécessairement les codes de la grille.
+
+Mets en avant les risques réellement identifiés, leur importance et les principaux éléments expliquant le score. Traduis les codes techniques de la grille en langage métier compréhensible — ne cite pas inutilement les codes de critères sauf lorsqu'ils apportent une vraie valeur. Mentionne les points importants encore INCONNU lorsque c'est pertinent, sans jamais les présenter comme une absence de risque établie. Si aucun risque bloquant majeur n'est identifié, indique-le clairement.
+
+Retourne UNIQUEMENT la synthèse finale, sans titre, sans markdown et sans commentaire sur ton raisonnement."""
+
+
+def _truncate_for_synthesis(text, max_len=300):
+    """Tronque un verbatim avant de l'envoyer au LLM de synthèse — même
+    esprit que export._truncate (colonnes PDF), mais ici pour maîtriser le
+    budget d'entrée (~2000 tokens indicatif, cf. directive), pas une
+    largeur de cellule."""
+    text = str(text or "")
+    return text if len(text) <= max_len else text[: max_len - 1].rstrip() + "…"
+
+
+def _format_context_for_synthesis(context):
+    """context : dict|None — les 4 champs manuels (BLOC D, CC-V4-11).
+    Simple mise en forme, jamais relu par le score (comme partout
+    ailleurs où `context` transite)."""
+    if not context:
+        return "(non renseigné)"
+    parts = []
+    if context.get("ep_classification"):
+        parts.append(f"Classification EP : {context['ep_classification']}")
+    if context.get("sensitivity"):
+        parts.append(f"Sensibilité : {context['sensitivity']}")
+    if context.get("financing_amount"):
+        parts.append(f"Montant du financement : {context['financing_amount']}")
+    if context.get("cacib_role"):
+        parts.append(f"Rôle dans le deal : {context['cacib_role']}")
+    return " | ".join(parts) if parts else "(non renseigné)"
+
+
+def _format_oui_block(questions):
+    oui = [q for q in questions if q["status"] == "OUI"]
+    if not oui:
+        return "Aucun."
+    lines = []
+    for q in oui:
+        ev_r = q.get("evidence_r")
+        verbatim = _truncate_for_synthesis(ev_r["passage"]) if ev_r and ev_r.get("passage") else None
+        mit_label = q.get("mitigation_label")
+        line = f"- [{q['code']}] {q['sous_theme']} — {q['question_r']}"
+        if verbatim:
+            line += f'\n  Verbatim : "{verbatim}"'
+        if mit_label:
+            line += f"\n  Mitigation : {mit_label}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _format_inconnu_block(questions):
+    """CHOIX: distinct de _format_oui_block — n'affiche JAMAIS de
+    "conclusion" sur un INCONNU, seulement le sujet (code + intitulé) et,
+    s'il existe (cas du verrou B.2.1->B.2.2, où un verbatim peut exister
+    malgré le statut INCONNU forcé par le score, cf. grid_scoring.py), un
+    élément jugé insuffisant pour conclure — jamais présenté comme une
+    absence de risque. Sinon, texte canonique "Aucun élément n'a été
+    trouvé." (même texte que grid_analyze._silence_fallback, cf. sa
+    docstring — cohérence UI/export/synthèse sur la même formulation)."""
+    inconnu = [q for q in questions if q["status"] == "INCONNU"]
+    if not inconnu:
+        return "Aucun."
+    lines = []
+    for q in inconnu:
+        ev_r = q.get("evidence_r")
+        verbatim = _truncate_for_synthesis(ev_r["passage"]) if ev_r and ev_r.get("passage") else None
+        line = f"- [{q['code']}] {q['sous_theme']} — {q['question_r']}"
+        if verbatim:
+            line += f'\n  Élément trouvé, insuffisant pour conclure : "{verbatim}"'
+        else:
+            line += "\n  Aucun élément n'a été trouvé."
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def get_synthesis_prompt(result):
+    """Assemble le prompt de la passe de synthèse finale (post-scoring).
+
+    `result` : dict déjà assemblé par grid_result.build_grid_result (clés
+    "questions"/"scoring"/"context", cf. contrat documenté dans ce
+    module). N'envoie au LLM QUE les questions OUI/INCONNU + le score/
+    couleur + le contexte dossier — jamais les NON/NA, jamais les chunks
+    bruts du rapport (cf. bandeau ci-dessus, "Coût / taille du contexte").
+    """
+    scoring = result["scoring"]
+    questions = result["questions"]
+    context = result.get("context")
+    n_non = sum(1 for q in questions if q["status"] == "NON")
+
+    return _SYNTHESIS_PROMPT.format(
+        context_block=_format_context_for_synthesis(context),
+        score=scoring["score"],
+        color=scoring["color"],
+        oui_block=_format_oui_block(questions),
+        inconnu_block=_format_inconnu_block(questions),
+        n_non=n_non,
+    )

@@ -127,6 +127,13 @@ LLM_RATE_LIMIT = float(os.environ.get("LLM_RATE_LIMIT", "10"))
 # nom aligné sur la version courante de la grille.
 GRID_V4_ENABLED = True
 
+# Passe de synthèse finale (un seul appel LLM, texte libre, après le
+# scoring — cf. grid_analyze._generate_synthesis). Disjoncteur séparé de
+# GRID_V4_ENABLED : désactiver la synthèse ne doit pas désactiver la
+# grille elle-même (fail-open indépendant, comme DEEP_ANALYSIS_ENABLED
+# pour l'ancien pipeline).
+GRID_SYNTHESIS_ENABLED = _flag("ESG_GRID_SYNTHESIS_ENABLED", True)
+
 # --- Pipeline actif ---
 # CHOIX: un enum à 2 valeurs ("v4" | "legacy"), pas deux flags booléens
 # indépendants — deux flags pourraient être activés tous les deux par

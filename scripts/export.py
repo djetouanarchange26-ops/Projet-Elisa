@@ -409,6 +409,14 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
                 pdf.set_text_color(90, 90, 90)
                 pdf.multi_cell(0, 5, _safe(f'  "{display}"'), new_x="LMARGIN", new_y="NEXT")
                 pdf.set_text_color(0, 0, 0)
+            elif q["status"] == "INCONNU":
+                # Directive "gestion INCONNU" (2026-08-20) : rien invente
+                # quand aucun element n'a ete extrait.
+                no_element_note = q.get("confidence_note") or "Aucun element n'a ete trouve."
+                pdf.set_font("Helvetica", "I", 9)
+                pdf.set_text_color(90, 90, 90)
+                pdf.cell(0, 5, _safe(f"  {no_element_note}"), new_x="LMARGIN", new_y="NEXT")
+                pdf.set_text_color(0, 0, 0)
             pdf.ln(1)
 
     # --- Synthese (optionnelle, absente du contrat result_v4 aujourd'hui —
@@ -526,8 +534,12 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
                 pdf.ln(1)
 
             if q.get("confidence_note"):
-                pdf.set_font("Helvetica", "B", 9)
-                pdf.cell(0, 5, "Doute :", new_x="LMARGIN", new_y="NEXT")
+                # Directive "gestion INCONNU" (2026-08-20) : une absence
+                # totale de passage (silence_applied) n'est pas un "doute"
+                # du LLM — pas de label, texte canonique affiché tel quel.
+                if not q.get("silence_applied"):
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.cell(0, 5, "Doute :", new_x="LMARGIN", new_y="NEXT")
                 pdf.set_font("Helvetica", "I", 9)
                 pdf.set_text_color(120, 120, 120)
                 pdf.multi_cell(0, 5, _safe(q["confidence_note"]), new_x="LMARGIN", new_y="NEXT")

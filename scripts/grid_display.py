@@ -253,6 +253,12 @@ def _render_signals(result_v4):
             # verbatim complet reste visible dans la Grille, section 5.
             display = verbatim[:200] + "…" if len(verbatim) > 200 else verbatim
             st.caption(f'"{display}"')
+        elif q["status"] == "INCONNU":
+            # Directive "gestion INCONNU" (2026-08-20) : rien inventé quand
+            # aucun élément n'a été extrait — même texte canonique que
+            # grid_analyze._NO_ELEMENT_FOUND (confidence_note), affiché ici
+            # tel quel plutôt que reformulé.
+            st.caption(q.get("confidence_note") or "Aucun élément n'a été trouvé.")
 
     st.markdown("---")
 
@@ -317,8 +323,15 @@ def _render_grid(result_v4):
 
             confidence = q.get("confidence_note")
             if confidence:
-                st.markdown("**Doute de l'analyste IA**")
-                st.caption(confidence)
+                if q.get("silence_applied"):
+                    # Directive "gestion INCONNU" (2026-08-20) : une
+                    # absence totale de passage n'est pas un "doute de
+                    # l'IA" — affichage neutre, sans label ni
+                    # interprétation, texte canonique tel quel.
+                    st.caption(confidence)
+                else:
+                    st.markdown("**Doute de l'analyste IA**")
+                    st.caption(confidence)
 
             qualifying = q.get("qualifying")
             if qualifying:
