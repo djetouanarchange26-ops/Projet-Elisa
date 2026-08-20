@@ -292,6 +292,51 @@ class _GridV4PDF(FPDF):
         self.set_text_color(0, 0, 0)
 
 
+def _write_context_sentence(pdf, context):
+    """Phrase narrative du contexte dossier (BLOC D), avec les valeurs
+    discriminantes en gras — remplace l'ancienne ligne brute
+    `A | Sensible | 400 | Mandated Lead Arranger` (cf. retour Elisa
+    2026-08-20, "en faire un vrai rapport"). Miroir de
+    grid_display._format_context_sentence, mais fpdf2 n'interprete pas le
+    markdown : la phrase est decoupee en segments (texte, gras) ecrits en
+    continu via pdf.write() (contrairement a cell(), write() ne force pas
+    de retour a la ligne et wrap automatiquement sur la largeur de page)."""
+    ep = context.get("ep_classification")
+    sensitivity = context.get("sensitivity")
+    amount = context.get("financing_amount")
+    role = context.get("cacib_role")
+
+    if not any([ep, sensitivity, amount, role]):
+        return
+
+    segments = [("Ce dossier est ", False)]
+    if ep:
+        segments += [("classe ", False), (f"Categorie {ep}", True), (" (Equator Principles)", False)]
+    else:
+        segments.append(("presente le contexte suivant", False))
+
+    clauses = []
+    if sensitivity:
+        clauses.append([("un statut de portefeuille ", False), (sensitivity, True)])
+    if amount:
+        clauses.append([("un financement de ", False), (str(amount), True)])
+    if role:
+        clauses.append([("la banque intervenant en tant que ", False), (role, True)])
+    if clauses:
+        segments.append((", avec ", False))
+        for i, clause in enumerate(clauses):
+            if i > 0:
+                segments.append((", ", False))
+            segments += clause
+    segments.append((".", False))
+
+    for text, bold in segments:
+        pdf.set_font("Helvetica", "B" if bold else "", 9)
+        pdf.write(5, _safe(text))
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "", 9)
+
+
 def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     """Génère un rapport PDF de la Grille V4 (12 questions), maquette Elisa
     2026-08-20.
@@ -344,14 +389,7 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     if context:
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(0, 6, "Contexte du dossier", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Helvetica", "", 9)
-        ctx_line = " | ".join(
-            str(v) for v in [
-                context.get("ep_classification"), context.get("sensitivity"),
-                context.get("financing_amount"), context.get("cacib_role"),
-            ] if v
-        ) or "-"
-        pdf.cell(0, 5, _safe(ctx_line), new_x="LMARGIN", new_y="NEXT")
+        _write_context_sentence(pdf, context)
         pdf.cell(0, 5, _safe(f"Mode : {mode_label}"), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(3)
 

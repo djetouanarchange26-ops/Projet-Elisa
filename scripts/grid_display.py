@@ -164,17 +164,9 @@ def _render_project_description(result_v4, project_name):
     st.markdown("### Description du projet")
 
     context = result_v4.get("context") or {}
-    ctx_parts = []
-    if context.get("ep_classification"):
-        ctx_parts.append(f"**EP :** {context['ep_classification']}")
-    if context.get("sensitivity"):
-        ctx_parts.append(f"**Sensibilité :** {context['sensitivity']}")
-    if context.get("financing_amount"):
-        ctx_parts.append(f"**Montant :** {context['financing_amount']}")
-    if context.get("cacib_role"):
-        ctx_parts.append(f"**Rôle :** {context['cacib_role']}")
-    if ctx_parts:
-        st.markdown(" · ".join(ctx_parts))
+    sentence = _format_context_sentence(context)
+    if sentence:
+        st.markdown(sentence)
 
     mode_label = result_v4.get("reading_mode_label") or "—"
     st.markdown(f"**Mode de lecture :** {mode_label}")
@@ -183,6 +175,37 @@ def _render_project_description(result_v4, project_name):
     st.markdown(f"**Date :** {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
     st.markdown("---")
+
+
+def _format_context_sentence(context):
+    """Phrase narrative du contexte dossier (BLOC D) au lieu d'une ligne de
+    champs bruts façon `A | Sensible | 400 | Mandated Lead Arranger` — cf.
+    retour Elisa 2026-08-20, "en faire un vrai rapport". Les 4 champs sont
+    obligatoires avant analyse (cf. app.py:900-905, manual_fields_ok) donc
+    tous présents dans le cas courant ; les clauses restent individuellement
+    optionnelles ici en défensif pour d'anciens résultats en cache
+    (session_state d'une exécution antérieure au champ)."""
+    ep = context.get("ep_classification")
+    sensitivity = context.get("sensitivity")
+    amount = context.get("financing_amount")
+    role = context.get("cacib_role")
+
+    if not any([ep, sensitivity, amount, role]):
+        return ""
+
+    lead = f"classé **Catégorie {ep}** (Equator Principles)" if ep else "présente le contexte suivant"
+    clauses = []
+    if sensitivity:
+        clauses.append(f"un statut de portefeuille **{sensitivity}**")
+    if amount:
+        clauses.append(f"un financement de **{amount}**")
+    if role:
+        clauses.append(f"la banque intervenant en tant que **{role}**")
+
+    sentence = f"Ce dossier est {lead}"
+    if clauses:
+        sentence += ", avec " + ", ".join(clauses)
+    return sentence + "."
 
 
 # ============================================================================
