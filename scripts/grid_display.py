@@ -308,7 +308,7 @@ def _format_context_sentence(context):
 # ============================================================================
 
 def _render_executive_summary(result_v4):
-    st.markdown("## Executive Risk Summary")
+    st.markdown("## Résumé exécutif du risque")
 
     _render_score(result_v4)
     _render_synthesis(result_v4)

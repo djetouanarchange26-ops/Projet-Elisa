@@ -821,7 +821,7 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════
 if page == "🔍 Transaction Analysis":
     st.markdown("## 🔍 Transaction Analysis")
-    st.markdown("*Upload a project document or paste text to detect ESG risk signals*")
+    st.markdown("*Charger un document projet ou coller du texte pour détecter les signaux de risque ESG*")
 
     # ── Contexte du dossier (BLOC D, CC-V4-11) — 4 champs manuels
     # obligatoires, remontés depuis la sidebar (maquette Elisa) : bloc
@@ -874,7 +874,7 @@ if page == "🔍 Transaction Analysis":
     # ── Input zone — fichier ou texte collé ───────────────────
     input_mode = st.radio(
         "Comment fournir le document ?",
-        ["📄 Upload a file", "✍️ Paste text"],
+        ["📄 Charger un fichier", "✍️ Coller le texte"],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -888,9 +888,9 @@ if page == "🔍 Transaction Analysis":
     # du pipeline (grid_analyze.py traite déjà tout comme "UN document").
     uploaded_file = None
     pasted_text = ""
-    if input_mode == "📄 Upload a file":
+    if input_mode == "📄 Charger un fichier":
         uploaded_file = st.file_uploader(
-            "Upload a PDF — ESRS, ESIA, Monitoring Report, INSP Review",
+            "Charger un PDF — ESRS, ESIA, rapport de monitoring, revue INSP",
             type=["pdf", "txt"],
             accept_multiple_files=False,
             help="Un seul document par analyse. Traitement local, aucune donnée ne "
@@ -925,7 +925,7 @@ if page == "🔍 Transaction Analysis":
     col_btn, col_status = st.columns([1, 3])
     with col_btn:
         analyze_clicked = st.button(
-            "▶ Run Analysis", type="primary", use_container_width=True,
+            "▶ Lancer l'analyse", type="primary", use_container_width=True,
             disabled=not has_input or not manual_fields_ok,
         )
     if has_input and not manual_fields_ok:
@@ -1098,7 +1098,7 @@ if page == "🔍 Transaction Analysis":
         )
         st.stop()
     elif "last_analysis" not in st.session_state:
-        st.info("👆 Upload a document or paste text, then click **Run Analysis** to see the results.")
+        st.info("👆 Chargez un document ou collez du texte, puis cliquez sur **Lancer l'analyse** pour voir les résultats.")
         st.stop()
 
     active = st.session_state["last_analysis"]

@@ -261,7 +261,7 @@ _COLOR_RGB_V4 = {
 # SEUIL: largeurs calibrées pour tenir sur une page A4 portrait (~190mm
 # utiles avec les marges par défaut de fpdf2) — 7 colonnes, somme = 183mm.
 _GRID_V4_TABLE_COLS = [
-    ("Code", 18), ("Sous-theme", 62), ("Statut", 20),
+    ("Sous-theme", 62), ("Code", 18), ("Statut", 20),
     ("Mitigation", 35), ("Penalite", 18), ("Gain", 15), ("Net", 15),
 ]
 
@@ -457,9 +457,11 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
 
     Structure (maquette) :
     - Page 1 : en-tete "ESG Risk Intelligence", contexte du dossier, score
-      (fond colore), signaux identifies (OUI/INCONNU, verbatim tronque a
-      200 caracteres), synthese (si result_v4.get("synthesis"), sinon
-      section absente — cf. grid_display.py pour le meme choix cote UI)
+      (fond colore), synthese (si result_v4.get("synthesis"), sinon
+      section absente), signaux identifies (OUI/INCONNU, verbatim tronque
+      a 200 caracteres) — synthese placee juste apres le score, MEME ordre
+      que grid_display._render_executive_summary (cf. _write_project_
+      metadata_sentence pour le detail cote UI)
     - Page 2 : tableau des 12 questions + ligne de total
     - Pages suivantes : detail par question, UNIQUEMENT OUI et INCONNU
       (les NON ne sont plus detailles, cf. "Ce qu'il ne faut PAS faire")
@@ -532,6 +534,18 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     )
     pdf.ln(4)
 
+    # --- Synthese (optionnelle, absente du contrat result_v4 aujourd'hui) :
+    # juste apres le score, AVANT les signaux — meme ordre que
+    # grid_display._render_executive_summary (retour Elisa 2026-08-21 :
+    # la synthese n'etait pas au meme endroit dans le PDF que dans l'UI).
+    synthesis = result_v4.get("synthesis")
+    if synthesis:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Synthese", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 6, _safe(synthesis), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+
     # --- Signaux identifies (KPI, OUI + INCONNU) ---
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 8, "Signaux identifies", new_x="LMARGIN", new_y="NEXT")
@@ -547,7 +561,7 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
 
             pdf.set_font("Helvetica", "B", 10)
             pdf.multi_cell(
-                0, 6, _safe(f"- {q['code']} - {q['sous_theme']} ({net:+d} pts)"),
+                0, 6, _safe(f"- {q['sous_theme']} ({q['code']}) : {net:+d} pts"),
                 new_x="LMARGIN", new_y="NEXT",
             )
             if mit_label:
@@ -574,16 +588,6 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
                 pdf.set_text_color(0, 0, 0)
             pdf.ln(1)
 
-    # --- Synthese (optionnelle, absente du contrat result_v4 aujourd'hui —
-    # cf. grid_display.py pour la meme justification) ---
-    synthesis = result_v4.get("synthesis")
-    if synthesis:
-        pdf.ln(2)
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 8, "Synthese", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(0, 6, _safe(synthesis), new_x="LMARGIN", new_y="NEXT")
-
     # --- Page 2 : tableau des 12 questions ---
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 14)
@@ -602,8 +606,8 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     for q in result_v4["questions"]:
         gain = q.get("gain", 0)
         row = [
-            q["code"],
             _truncate(q["sous_theme"], 38),
+            q["code"],
             q["status"],
             _truncate(q.get("mitigation_label") or "-", 22),
             str(q["penalty"]),
@@ -645,7 +649,7 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
 
         for q in detail_questions:
             pdf.set_font("Helvetica", "B", 11)
-            pdf.multi_cell(0, 7, _safe(f"{q['code']} - {q['sous_theme']}"), new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 7, _safe(f"{q['sous_theme']} ({q['code']})"), new_x="LMARGIN", new_y="NEXT")
             _write_question_sentence(pdf, q)
             pdf.ln(1)
 
