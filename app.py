@@ -772,48 +772,13 @@ with st.sidebar:
     st.markdown("---")
     st.caption("v0.1 MVP · Données publiques IFC/CAO")
 
-    # ── Contrôles Grille V4 (refactor pipeline unique) ──
-    # CHOIX: import de grid_questions différé ici (pas en tête de fichier)
-    # — cohérent avec la consigne de ne jamais importer les modules V4 hors
-    # d'un bloc gardé par config.GRID_V4_ENABLED (un déploiement sans les
-    # fichiers V4 ne doit pas planter au chargement de app.py). Gardé sur
-    # ACTIVE_PIPELINE="v4" (pas seulement GRID_V4_ENABLED) — ces contrôles
-    # n'ont aucun effet si le pipeline actif est "legacy".
-    if config.GRID_V4_ENABLED and config.ACTIVE_PIPELINE == "v4":
-        import grid_questions
-
-        st.markdown("---")
-        st.subheader("Grille V4")
-
-        # CHOIX: "Auto" (None) est le défaut — la détection R11
-        # (grid_doctype.py) tourne à chaque analyse et résout le type
-        # automatiquement ; ce sélecteur ne sert plus qu'à FORCER une
-        # valeur si l'analyste conteste la détection (contrôle humain,
-        # Note de Cadrage décision 2), pas à choisir un défaut à l'aveugle
-        # (avant ce chantier, l'index 0 figé = Type 1 pour tout document,
-        # y compris un rapport de monitoring Type 3).
-        st.selectbox(
-            "Type de document (R11)",
-            options=[None, 1, 2, 3, 4],
-            format_func=lambda x: "🤖 Détection automatique (recommandé)" if x is None else grid_questions.DOCUMENT_TYPES[x]["label"],
-            index=0,
-            key="grid_v4_document_type_override",
-            help="Laisser sur détection automatique sauf si vous contestez le type détecté après une analyse.",
-        )
-
-        st.multiselect(
-            "Modules N/A",
-            options=["B.2"],
-            default=[],
-            key="grid_v4_na_modules",
-            help="B.2 (pollution) : N/A si le projet n'a aucun vecteur de pollution",
-        )
-        # Les 4 champs manuels obligatoires (BLOC D, CC-V4-11) sont
-        # remontés en haut de la page principale, avant l'upload (maquette
-        # Elisa) — cf. bloc "Contexte du dossier" dans la page Transaction
-        # Analysis ci-dessous. Clés session_state INCHANGÉES (grid_v4_
-        # ep_class/_sensitivity/_financing/_cacib_role), seul l'emplacement
-        # du widget change.
+    # Les contrôles "Type de document (R11)" (override manuel) et
+    # "Modules N/A" ont été retirés de la sidebar (2026-08-21) : la
+    # détection R11 reste automatique uniquement, et aucun module n'est
+    # plus marquable N/A à la main. Les 4 champs
+    # manuels obligatoires (BLOC D, CC-V4-11) restent en haut de la page
+    # principale, avant l'upload — cf. bloc "Contexte du dossier" dans la
+    # page Transaction Analysis ci-dessous.
 
 
 # ══════════════════════════════════════════════════════════════
@@ -996,8 +961,6 @@ if page == "🔍 Transaction Analysis":
                     dispatch_result = pipeline_dispatch.run_active_pipeline(
                         extracted_text,
                         chunks_for_grid=chunks_for_grid,
-                        na_modules=st.session_state.get("grid_v4_na_modules"),
-                        document_type_override=st.session_state.get("grid_v4_document_type_override"),
                         document_label=doc_label,
                         risk_thresholds=st.session_state.get("risk_thresholds"),
                         grid_context=grid_context,
