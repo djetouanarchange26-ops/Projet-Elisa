@@ -1826,6 +1826,24 @@ def test_grid_analyze_v4():
               b21_empty["penalty"] == 0 and b21_empty.get("gain", 0) == 0,
               f"Obtenu : penalty={b21_empty['penalty']}, gain={b21_empty.get('gain')}")
 
+        # --- _SILENCE_CONFIRMS_ABSENCE (B.3.1/B.3.2) : silence -> OUI
+        # pénalisant, mais avec un texte DIFFÉRENT du texte canonique
+        # générique (retour Elisa 2026-08-21, PDF Vorotan : une pénalité
+        # affichée à côté du même texte "Aucun élément trouvé" que des
+        # questions à 0 pt ne s'explique pas). ---
+        b31_empty = next(q for q in result_empty["questions"] if q["code"] == "B.3.1")
+        _test("Aucun chunk -> repli silence (B.3.1, confirms_absence) -> status='OUI'",
+              b31_empty["status"] == "OUI", f"Obtenu : {b31_empty['status']!r}")
+        _test("Aucun chunk -> B.3.1 silence_applied=True", b31_empty["silence_applied"] is True)
+        _test("Aucun chunk -> B.3.1 pénalité=-15 (silence = risque confirmé)",
+              b31_empty["penalty"] == -15, f"Obtenu : {b31_empty['penalty']}")
+        _test("B.3.1 (confirms_absence) -> confidence_note DIFFÉRENT du texte canonique générique",
+              b31_empty["confidence_note"] != "Aucun élément n'a été trouvé.",
+              f"Obtenu : {b31_empty['confidence_note']!r}")
+        _test("B.3.1 (confirms_absence) -> confidence_note explique le mécanisme R5",
+              "risque évalué" in (b31_empty["confidence_note"] or ""),
+              f"Obtenu : {b31_empty['confidence_note']!r}")
+
         try:
             grid_result.validate_grid_result(result_empty)
             _test("Résultat 100% silence -> validate_grid_result ne lève pas", True)

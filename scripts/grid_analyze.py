@@ -99,6 +99,20 @@ _SILENCE_CONFIRMS_ABSENCE = {"B.3.1", "B.3.2"}
 # LLM de synthèse (cf. grid_prompts._format_inconnu_block).
 _NO_ELEMENT_FOUND = "Aucun élément n'a été trouvé."
 
+# Variante affichée UNIQUEMENT pour _SILENCE_CONFIRMS_ABSENCE (B.3.1/B.3.2) :
+# contrairement aux autres questions, ce silence produit un OUI pénalisant
+# (pas un INCONNU/NON sans impact), donc le texte canonique générique
+# ci-dessus laisserait Elisa sans explication sur une pénalité affichée
+# à côté d'un "Aucun élément trouvé" par ailleurs neutre pour d'autres
+# questions de la même grille (retour Elisa 2026-08-21, PDF Vorotan :
+# "pourquoi ça flag si ya rien de trouvé"). Même texte canonique
+# invariable (pas de reformulation LLM), juste une variante explicite sur
+# CE cas particulier de la règle R5.
+_SILENCE_CONFIRMS_ABSENCE_NOTE = (
+    "Aucune mention trouvée dans le document. Pour ce critère, l'absence "
+    "de donnée constitue en elle-même le risque évalué (cf. règle R5)."
+)
+
 
 def _silence_status(question):
     """Statut de repli selon silence_type (R5, grid_questions.py, CC-08),
@@ -112,8 +126,11 @@ def _silence_status(question):
 
 
 def _silence_fallback(question, reason):
+    status = _silence_status(question)
+    if question["code"] in _SILENCE_CONFIRMS_ABSENCE:
+        reason = _SILENCE_CONFIRMS_ABSENCE_NOTE
     return {
-        "status": _silence_status(question),
+        "status": status,
         "mitigation_status": None,
         "evidence_r": None,
         "evidence_a": None,
