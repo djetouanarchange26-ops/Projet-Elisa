@@ -7,3 +7,13 @@ __pycache__/
 data/raw/~$*.xlsx
 .env
 *.log
+
+# Documents source/reference deposes a la racine (confidentiels, jamais
+# commit) -- corpus/ gere deja les PDF de test, ceci couvre les depots
+# ponctuels a la racine (Maquette, Guide Methodologique, Note de Cadrage,
+# rapports projet...). /*.pdf (racine seulement, pas recursif) pour ne
+# pas toucher un futur docs/*.pdf tracke intentionnellement.
+/*.pdf
+/*.docx
+DIRECTIVE_CLAUDE_CODE_ESG_V3*.md
+PROMPT_CLAUDE_CODE_ESG_V2*.md
