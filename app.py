@@ -142,23 +142,6 @@ def _extract_uploaded_text(uploaded_file):
         )
 
 
-def _extract_multi_doc_text(uploaded_files):
-    """Concatène le texte de plusieurs documents (ESIA + ESAP + Monitoring
-    Report, typique d'une due diligence) en un seul texte pour analyze().
-
-    CHOIX: concaténation avec séparateur par nom de fichier, pas une
-    analyse séparée par document — garde le pipeline analyze() inchangé
-    (une seule liste de chunks, un seul jeu de flag_scores). Limite assumée
-    (cohérente avec le chantier "annotation page par page", en pause) :
-    les signaux détectés/le surlignage ne distinguent pas de quel document
-    ils viennent, seulement leur position dans le texte concaténé.
-    """
-    parts = []
-    for f in uploaded_files:
-        parts.append(f"\n\n=== {f.name} ===\n\n" + _extract_uploaded_text(f))
-    return "".join(parts)
-
-
 def _safe_filename(label, max_len=60):
     """`doc_label` peut être un nom de fichier, "Texte collé", ou une liste
     de plusieurs documents ("3 documents (a.pdf, b.pdf, ...)") — normalise
@@ -896,17 +879,23 @@ if page == "🔍 Transaction Analysis":
         label_visibility="collapsed",
     )
 
-    uploaded_files = []
+    # Un seul document par analyse (MVP, 2026-08-20) — le multi-doc a été
+    # retiré : les documents concaténés perdaient toute traçabilité
+    # (numérotation de page qui repart à 1 par fichier, aucune preuve
+    # rattachée à son document source, cf. audit UI). Plutôt que
+    # d'afficher une fonctionnalité qui ne tient pas ses promesses,
+    # simplifié à un seul fichier — cohérent avec les capacités réelles
+    # du pipeline (grid_analyze.py traite déjà tout comme "UN document").
+    uploaded_file = None
     pasted_text = ""
     if input_mode == "📄 Upload a file":
-        uploaded_files = st.file_uploader(
-            "Upload PDF(s) — ESRS, ESIA, Monitoring Report, INSP Review",
+        uploaded_file = st.file_uploader(
+            "Upload a PDF — ESRS, ESIA, Monitoring Report, INSP Review",
             type=["pdf", "txt"],
-            accept_multiple_files=True,
-            help="Une due diligence croise souvent plusieurs documents (ESIA + ESAP + "
-                 "Monitoring Report) — sélectionnez-en plusieurs, ils seront analysés "
-                 "ensemble. Traitement local, aucune donnée ne quitte votre machine.",
-        ) or []
+            accept_multiple_files=False,
+            help="Un seul document par analyse. Traitement local, aucune donnée ne "
+                 "quitte votre machine.",
+        )
     else:
         pasted_text = st.text_area(
             "Coller le texte du document",
@@ -916,7 +905,7 @@ if page == "🔍 Transaction Analysis":
         )
 
     # ── Analyze button ───────────────────────────────────────
-    has_input = bool(uploaded_files) or bool(pasted_text.strip())
+    has_input = uploaded_file is not None or bool(pasted_text.strip())
 
     # BLOC D (CC-V4-11) : les 4 champs manuels obligatoires ne bloquent
     # QUE le pipeline V4 (le pipeline legacy n'a pas de bloc "context" et
@@ -964,15 +953,18 @@ if page == "🔍 Transaction Analysis":
             with st.status("Analyse en cours...", expanded=True) as status:
                 try:
                     st.write("Extraction du texte...")
+                    # `documents` : liste à 1 élément (un seul document par
+                    # analyse, cf. plus haut) — gardée comme liste, pas une
+                    # simple string, pour rester compatible avec le contrat
+                    # attendu par grid_display.render_grid_v4_tab.
                     if pasted_text.strip():
                         extracted_text = pasted_text.strip()
                         doc_label = "Texte collé"
-                    elif len(uploaded_files) == 1:
-                        extracted_text = _extract_uploaded_text(uploaded_files[0])
-                        doc_label = uploaded_files[0].name
+                        documents = ["Texte collé"]
                     else:
-                        extracted_text = _extract_multi_doc_text(uploaded_files)
-                        doc_label = f"{len(uploaded_files)} documents ({', '.join(f.name for f in uploaded_files)})"
+                        extracted_text = _extract_uploaded_text(uploaded_file)
+                        doc_label = uploaded_file.name
+                        documents = [uploaded_file.name]
                     st.write(f"✓ Texte extrait ({len(extracted_text)} caractères)")
 
                     # CHANTIER 4 (V2) : chunks du DOCUMENT ANALYSÉ (pas le
@@ -1027,6 +1019,15 @@ if page == "🔍 Transaction Analysis":
                         doc_specificity = _compute_document_specificity(doc_chunks)
                         findings_table = _build_findings_table(result["deep_analysis"], doc_chunks)
 
+                    # Un seul timestamp pour "last_analysis" ET l'entrée
+                    # d'historique — avant, seule l'entrée d'historique
+                    # gardait un vrai timestamp ; l'écran de résultat actif
+                    # n'en stockait aucun et affichait datetime.now() AU
+                    # RENDU (recalculé à chaque rerun Streamlit) — donc une
+                    # date fausse qui dérivait vers "maintenant" à chaque
+                    # interaction (audit UI 2026-08-20).
+                    analyzed_at = datetime.now()
+
                     # Résultat "actif" affiché ci-dessous — persiste tant que
                     # l'analyste ne relance pas une analyse ou ne change pas
                     # d'onglet et ne revient pas (sinon les résultats
@@ -1038,6 +1039,8 @@ if page == "🔍 Transaction Analysis":
                         "display":         display_result,
                         "extracted_text":  extracted_text,
                         "document":        doc_label,
+                        "documents":       documents,
+                        "analyzed_at":     analyzed_at,
                         "doc_specificity": doc_specificity,
                         "findings_table":  findings_table,
                     }
@@ -1049,7 +1052,7 @@ if page == "🔍 Transaction Analysis":
                         st.session_state.setdefault("analysis_history", []).append({
                             "pipeline":        "legacy",
                             "document":        doc_label,
-                            "timestamp":       datetime.now(),
+                            "timestamp":       analyzed_at,
                             "risk_grade":      display_result["risk_grade"],
                             "grade_label":     f"Grade {display_result['risk_grade']}",
                             "risk_label":      display_result["risk_label"],
@@ -1062,20 +1065,24 @@ if page == "🔍 Transaction Analysis":
                             "n_omissions":     len(result["deep_analysis"].get("omissions") or []),
                         })
                     else:
-                        _scoring = (result_v4 or {}).get("scoring", {})
-                        _detection = (result_v4 or {}).get("document_type_detection", {})
-                        st.session_state.setdefault("analysis_history", []).append({
-                            "pipeline":           "v4",
-                            "document":           doc_label,
-                            "timestamp":          datetime.now(),
-                            "score":              _scoring.get("score"),
-                            "color":              _scoring.get("color"),
-                            "grade_label":        f"{_scoring.get('score', '—')}/100 {_scoring.get('color', '')}".strip(),
-                            "document_type":      (result_v4 or {}).get("document_type"),
-                            "reading_mode_label": (result_v4 or {}).get("reading_mode_label"),
-                            "detection_source":   _detection.get("source"),
-                            "questions_active":   _scoring.get("questions_active"),
-                        })
+                        # Conservation des analyses (2026-08-20) : persistée
+                        # sur disque (scripts/analysis_store.py), plus dans
+                        # session_state["analysis_history"] — survit à la
+                        # fermeture du navigateur, contrairement à l'ancien
+                        # historique de session. Portfolio Dashboard lit
+                        # directement ces fichiers (cf. plus bas). Fail-open
+                        # : un échec d'écriture ne doit jamais faire échouer
+                        # l'analyse elle-même, juste prévenir l'analyste.
+                        import analysis_store
+                        saved_path = analysis_store.save_analysis(
+                            result_v4, document=doc_label, documents=documents, analyzed_at=analyzed_at,
+                        )
+                        if saved_path is None:
+                            st.warning(
+                                "⚠️ L'analyse a réussi mais n'a pas pu être sauvegardée sur disque — "
+                                "elle restera disponible ici tant que vous ne quittez pas la page, "
+                                "mais n'apparaîtra pas dans Portfolio Dashboard après fermeture."
+                            )
                     status.update(label="Analyse terminée", state="complete", expanded=False)
                 except Exception as e:
                     status.update(label="L'analyse a échoué", state="error", expanded=True)
@@ -1106,7 +1113,12 @@ if page == "🔍 Transaction Analysis":
     # les deux, donc rien d'utile à afficher depuis l'ancien pipeline ici).
     if pipeline_used == "v4":
         import grid_display
-        grid_display.render_grid_v4_tab(active.get("result_v4"), project_name=doc_label)
+        grid_display.render_grid_v4_tab(
+            active.get("result_v4"),
+            project_name=doc_label,
+            documents=active.get("documents"),
+            analyzed_at=active.get("analyzed_at"),
+        )
         st.stop()
 
     # --- Pipeline legacy — atteint UNIQUEMENT si config.ACTIVE_PIPELINE=
@@ -1389,79 +1401,128 @@ if page == "🔍 Transaction Analysis":
 # ══════════════════════════════════════════════════════════════
 elif page == "📊 Portfolio Dashboard":
     st.markdown("## 📊 Portfolio Dashboard")
-    st.markdown("*Historique des analyses de cette session*")
 
-    history = st.session_state.get("analysis_history", [])
-    # CHOIX: les entrées d'historique ont une forme différente selon le
-    # pipeline actif (score/couleur V4 vs grade/flag legacy, cf. le handler
-    # "Run Analysis" de Transaction Analysis) — mais config.ACTIVE_PIPELINE
-    # est constant pour tout le process (pas de changement à chaud), donc
-    # TOUTES les entrées d'une même session ont la même forme. Un seul
-    # branchement sur config.ACTIVE_PIPELINE suffit, pas un par ligne.
+    if config.ACTIVE_PIPELINE == "v4":
+        # Conservation des analyses (2026-08-20) : lit les fichiers
+        # persistés par analysis_store.py — survit à la fermeture du
+        # navigateur, contrairement à l'ancien historique de session.
+        st.markdown("*Analyses sauvegardées — l'analyste n'a pas à ré-uploader un document déjà analysé*")
+        import analysis_store
 
-    if not history:
-        st.info(
-            "👆 Aucune analyse effectuée cette session. Lance une analyse depuis "
-            "**Transaction Analysis** pour la voir apparaître ici."
-        )
-    elif config.ACTIVE_PIPELINE == "v4":
-        import grid_questions  # cf. sidebar : import différé, pas de dépendance dure à app.py au chargement
+        analyses = analysis_store.list_analyses()
+        if not analyses:
+            st.info(
+                "👆 Aucune analyse sauvegardée. Lance une analyse depuis "
+                "**Transaction Analysis** pour la voir apparaître ici."
+            )
+        else:
+            import grid_questions  # cf. sidebar : import différé, pas de dépendance dure à app.py au chargement
 
-        portfolio_df = pd.DataFrame([
-            {
-                "Document":       h["document"],
-                "Score":          f"{h.get('score', '—')}/100",
-                "Zone":           h.get("color") or "—",
-                "Type document":  grid_questions.DOCUMENT_TYPES[h["document_type"]]["label"] if h.get("document_type") else "—",
-                "Questions actives": h.get("questions_active", "—"),
-                "Détection type": h.get("detection_source") or "—",
-                "Analyzed At":    h["timestamp"].strftime("%Y-%m-%d %H:%M"),
+            portfolio_df = pd.DataFrame([
+                {
+                    "Document":          a.get("document") or "—",
+                    "Score":             f"{a.get('score', '—')}/100",
+                    "Zone":              a.get("color") or "—",
+                    "Type document":     grid_questions.DOCUMENT_TYPES[a["document_type"]]["label"]
+                                         if a.get("document_type") else "—",
+                    "Questions actives": a.get("questions_active", "—"),
+                    "Détection type":    a.get("detection_source") or "—",
+                    "Analyzed At":       a.get("analyzed_at") or "—",
+                }
+                for a in analyses
+            ])
+
+            color_filter = st.multiselect(
+                "Filter by Zone", ["VERT", "JAUNE", "ORANGE", "ROUGE"],
+                default=["VERT", "JAUNE", "ORANGE", "ROUGE"],
+            )
+            keep_mask = portfolio_df["Zone"].isin(color_filter)
+            st.dataframe(portfolio_df[keep_mask], use_container_width=True, hide_index=True)
+
+            filtered_analyses = [a for a, keep in zip(analyses, keep_mask) if keep]
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Analyses", len(filtered_analyses))
+            col2.metric("ROUGE (Éliminatoire)", sum(1 for a in filtered_analyses if a.get("color") == "ROUGE"))
+            col3.metric("ORANGE", sum(1 for a in filtered_analyses if a.get("color") == "ORANGE"))
+            col4.metric("VERT / JAUNE", sum(1 for a in filtered_analyses if a.get("color") in ("VERT", "JAUNE")))
+
+            st.markdown("---")
+            st.markdown("### Recharger une analyse")
+            options = {
+                f"{a.get('document') or '—'} — {a.get('score', '—')}/100 {a.get('color') or ''} — {a.get('analyzed_at') or '—'}": a["path"]
+                for a in filtered_analyses
             }
-            for h in reversed(history)
-        ])
+            if not options:
+                st.caption("Aucune analyse ne correspond au filtre ci-dessus.")
+            else:
+                choice_label = st.selectbox("Analyse à consulter", list(options.keys()))
+                if st.button("📂 Charger cette analyse"):
+                    loaded = analysis_store.load_analysis(options[choice_label])
+                    if loaded is None:
+                        st.error("Impossible de charger cette analyse (fichier corrompu ou déplacé).")
+                    else:
+                        st.session_state["_loaded_analysis"] = loaded
 
-        color_filter = st.multiselect(
-            "Filter by Zone", ["VERT", "JAUNE", "ORANGE", "ROUGE"],
-            default=["VERT", "JAUNE", "ORANGE", "ROUGE"],
-        )
-        filtered = portfolio_df[portfolio_df["Zone"].isin(color_filter)]
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+            loaded = st.session_state.get("_loaded_analysis")
+            if loaded:
+                st.markdown("---")
+                import grid_display
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Analyses", len(filtered))
-        col2.metric("ROUGE (Éliminatoire)", len(filtered[filtered["Zone"] == "ROUGE"]))
-        col3.metric("ORANGE", len(filtered[filtered["Zone"] == "ORANGE"]))
-        col4.metric("VERT / JAUNE", len(filtered[filtered["Zone"].isin(["VERT", "JAUNE"])]))
+                _analyzed_at = None
+                if loaded.get("analyzed_at"):
+                    try:
+                        _analyzed_at = datetime.fromisoformat(loaded["analyzed_at"])
+                    except ValueError:
+                        pass
+                grid_display.render_grid_v4_tab(
+                    loaded.get("result_v4"),
+                    project_name=loaded.get("document") or "",
+                    documents=loaded.get("documents"),
+                    analyzed_at=_analyzed_at,
+                )
+
+        st.caption("Analyses sauvegardées sur disque (pipeline V4) — survivent à la fermeture du navigateur.")
+
     else:
-        portfolio_df = pd.DataFrame([
-            {
-                "Document":      h["document"],
-                "Risk Grade":    h["risk_grade"],
-                "Risk Label":    h["risk_label"],
-                "Score":         f"{h['risk_score']}/100",
-                "Dominant Flag": FLAG_LABELS[h["dominant_flag"]].replace(" Risk", ""),
-                # CHANTIER 4 (V2) : vue comparative — le banquier voit
-                # immédiatement quels projets méritent une attention accrue
-                # (rapport vague + beaucoup de findings/omissions).
-                "Spécificité":   f"{round(h['doc_specificity'] * 100)}%" if h.get("doc_specificity") is not None else "—",
-                "Findings":      h.get("n_findings", 0),
-                "Omissions":     h.get("n_omissions", 0),
-                "Analyzed At":   h["timestamp"].strftime("%Y-%m-%d %H:%M"),
-            }
-            for h in reversed(history)
-        ])
+        # Pipeline legacy (comparaison technique ponctuelle, cf.
+        # pipeline_dispatch.py) — historique de session inchangé, pas
+        # concerné par la conservation sur disque (V4 uniquement).
+        history = st.session_state.get("analysis_history", [])
+        if not history:
+            st.info(
+                "👆 Aucune analyse effectuée cette session. Lance une analyse depuis "
+                "**Transaction Analysis** pour la voir apparaître ici."
+            )
+        else:
+            portfolio_df = pd.DataFrame([
+                {
+                    "Document":      h["document"],
+                    "Risk Grade":    h["risk_grade"],
+                    "Risk Label":    h["risk_label"],
+                    "Score":         f"{h['risk_score']}/100",
+                    "Dominant Flag": FLAG_LABELS[h["dominant_flag"]].replace(" Risk", ""),
+                    # CHANTIER 4 (V2) : vue comparative — le banquier voit
+                    # immédiatement quels projets méritent une attention accrue
+                    # (rapport vague + beaucoup de findings/omissions).
+                    "Spécificité":   f"{round(h['doc_specificity'] * 100)}%" if h.get("doc_specificity") is not None else "—",
+                    "Findings":      h.get("n_findings", 0),
+                    "Omissions":     h.get("n_omissions", 0),
+                    "Analyzed At":   h["timestamp"].strftime("%Y-%m-%d %H:%M"),
+                }
+                for h in reversed(history)
+            ])
 
-        grade_filter = st.multiselect("Filter by Risk Grade", ["A", "B", "C", "D"], default=["A", "B", "C", "D"])
-        filtered = portfolio_df[portfolio_df["Risk Grade"].isin(grade_filter)]
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+            grade_filter = st.multiselect("Filter by Risk Grade", ["A", "B", "C", "D"], default=["A", "B", "C", "D"])
+            filtered = portfolio_df[portfolio_df["Risk Grade"].isin(grade_filter)]
+            st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Analyses", len(filtered))
-        col2.metric("Grade A (Escalade)", len(filtered[filtered["Risk Grade"] == "A"]))
-        col3.metric("Grade B (Alerte)", len(filtered[filtered["Risk Grade"] == "B"]))
-        col4.metric("Grade C-D (Watch)", len(filtered[filtered["Risk Grade"].isin(["C", "D"])]))
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Analyses", len(filtered))
+            col2.metric("Grade A (Escalade)", len(filtered[filtered["Risk Grade"] == "A"]))
+            col3.metric("Grade B (Alerte)", len(filtered[filtered["Risk Grade"] == "B"]))
+            col4.metric("Grade C-D (Watch)", len(filtered[filtered["Risk Grade"].isin(["C", "D"])]))
 
-    st.caption("Historique de session uniquement — perdu à la fermeture du navigateur (pas de persistance base de données pour l'instant).")
+        st.caption("Historique de session uniquement — perdu à la fermeture du navigateur (pipeline legacy, pas concerné par la conservation sur disque).")
 
 
 # ══════════════════════════════════════════════════════════════

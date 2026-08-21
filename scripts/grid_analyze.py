@@ -417,11 +417,20 @@ def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override
     Ce bloc est un simple pass-through informatif (comme "qualifying",
     grid_result.py) — jamais relu par grid_scoring.py, qui ne connaît que
     l'entier document_type déjà résolu ici.
+
+    Ajoute aussi un bloc "project_metadata" (audit UI 2026-08-20, cf.
+    grid_metadata.py) :
+        {"sponsor": str|None, "country": str|None, "sector": str|None,
+         "client": str|None, "project_type": str|None,
+         "source": "llm"|"indisponible"}
+    Même principe de pass-through informatif, un seul appel LLM
+    supplémentaire par analyse (comme document_type_detection).
     """
     if not config.GRID_V4_ENABLED:
         return None
 
     import grid_doctype
+    import grid_metadata
 
     if document_type_override is not None:
         detection = {
@@ -438,4 +447,8 @@ def analyze_grid_auto(chunks, full_text, na_modules=None, document_type_override
     )
     if result is not None:
         result["document_type_detection"] = detection
+        # Métadonnées projet (audit UI 2026-08-20) : sponsor/pays/secteur/
+        # client/type de projet — même famille que document_type_detection
+        # (pass-through informatif, jamais relu par grid_scoring.py).
+        result["project_metadata"] = grid_metadata.detect_project_metadata(full_text)
     return result

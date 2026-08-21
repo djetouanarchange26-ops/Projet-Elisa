@@ -1,5 +1,6 @@
 corpus
 models
+data/analyses
 venv
 __pycache__/
 *.pyc

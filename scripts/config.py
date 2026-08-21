@@ -81,6 +81,10 @@ OLLAMA_CONFIGS = {
     # R11 (grid_doctype.py) : un seul appel par document, réponse courte
     # (TYPE/CONFIANCE/EVIDENCE) — pas besoin du contexte large de deep_synthesize.
     "detect_doctype":  {"num_predict": 200, "num_ctx": 2048},
+    # Métadonnées projet (grid_metadata.py, 2026-08-20) : même profil que
+    # detect_doctype — un seul appel par document, 5 champs courts
+    # (sponsor/pays/secteur/client/type de projet).
+    "detect_project_metadata": {"num_predict": 200, "num_ctx": 2048},
 }
 
 # CHANTIER LLM BACKEND (2026-08-07, checklist.md) — abstraction Ollama local

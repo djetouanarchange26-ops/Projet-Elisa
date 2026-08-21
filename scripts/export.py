@@ -292,6 +292,21 @@ class _GridV4PDF(FPDF):
         self.set_text_color(0, 0, 0)
 
 
+def _write_segments(pdf, segments, size=9, line_height=5, ln_after=6):
+    """Ecrit une liste de segments (texte, gras) en continu via pdf.write()
+    (contrairement a cell(), write() ne force pas de retour a la ligne et
+    wrap automatiquement sur la largeur de page) — factorise le pattern
+    phrase-narrative-avec-gras-partiel partage par _write_context_sentence
+    et _write_question_sentence (fpdf2 n'interprete pas le markdown, d'ou
+    la bascule manuelle de police par segment)."""
+    for text, bold in segments:
+        pdf.set_font("Helvetica", "B" if bold else "", size)
+        pdf.write(line_height, _safe(text))
+    if ln_after:
+        pdf.ln(ln_after)
+    pdf.set_font("Helvetica", "", size)
+
+
 def _write_context_sentence(pdf, context):
     """Phrase narrative du contexte dossier (BLOC D), avec les valeurs
     discriminantes en gras — remplace l'ancienne ligne brute
@@ -330,11 +345,105 @@ def _write_context_sentence(pdf, context):
             segments += clause
     segments.append((".", False))
 
-    for text, bold in segments:
-        pdf.set_font("Helvetica", "B" if bold else "", 9)
-        pdf.write(5, _safe(text))
-    pdf.ln(6)
-    pdf.set_font("Helvetica", "", 9)
+    _write_segments(pdf, segments)
+
+
+def _question_status_sentence(q):
+    """Phrase narrative statut/mitigation/impact d'une question, avec les
+    valeurs decisionnelles en gras — remplace les lignes brutes
+    "Statut : OUI" / "Mitigation : NON - forme insuffisante" /
+    "Penalite : -15 | Gain : +0 | Net : -15" (cf. retour Elisa 2026-08-20,
+    meme demarche que _write_context_sentence). N'est appelee que pour
+    q["status"] in ("OUI", "INCONNU") — seuls statuts presents dans la
+    section "Detail par question" (cf. build_grid_v4_pdf, filtre
+    detail_questions) ; NA et NON n'y apparaissent jamais, pas geres ici.
+
+    Pilotee par les donnees (mitigation_label + signe du gain), pas par
+    une correspondance figee sur les 4 valeurs de
+    grid_questions.MITIGATION_STATUTS — un libelle qui change de wording
+    cote grid_questions.py n'oblige pas a toucher ce template.
+
+    Retourne une liste de segments (texte, gras) pour _write_segments().
+    """
+    if q["status"] == "INCONNU":
+        return [
+            ("Les elements disponibles dans le document ne permettent pas de conclure sur ce point.", False),
+            (" Aucune penalite appliquee.", False),
+        ]
+
+    # status == "OUI" (seul autre cas possible ici, cf. docstring)
+    penalty = q["penalty"]
+    gain = q.get("gain", 0)
+    net = penalty + gain
+    mitigation_label = q.get("mitigation_label")
+
+    segments = [("Un risque a ete identifie ", False), ("(OUI)", True), (" sur ce point.", False)]
+
+    if mitigation_label is None:
+        segments.append((" Aucune mitigation n'a ete evaluee.", False))
+    elif gain > 0:
+        segments += [
+            (" Une mitigation a ete mise en place et jugee ", False),
+            (mitigation_label, True),
+            (".", False),
+        ]
+    else:
+        segments += [
+            (" Une mitigation a ete recherchee mais jugee ", False),
+            (mitigation_label, True),
+            (" — aucun gain d'attenuation.", False),
+        ]
+
+    segments += [
+        (" Penalite ", False), (f"{penalty} pts", True),
+        (", gain ", False), (f"{gain:+d} pts", True),
+        (", impact net ", False), (f"{net:+d} pts", True),
+        (".", False),
+    ]
+    return segments
+
+
+def _write_question_sentence(pdf, q):
+    _write_segments(pdf, _question_status_sentence(q), ln_after=2)
+
+
+def _write_project_metadata_sentence(pdf, metadata):
+    """Phrase narrative sponsor/pays/secteur/client/type de projet (audit
+    UI 2026-08-20, cf. grid_metadata.py) — memes segments (texte, gras)
+    que _write_context_sentence. Retourne False (rien ecrit) si aucun
+    champ n'a ete trouve — extraction LLM fail-open, jamais une valeur
+    inventee ici."""
+    sponsor = metadata.get("sponsor")
+    country = metadata.get("country")
+    sector = metadata.get("sector")
+    client = metadata.get("client")
+    project_type = metadata.get("project_type")
+
+    if not any([sponsor, country, sector, client, project_type]):
+        return False
+
+    lead = f"un projet de type {project_type}" if project_type else "un projet"
+    segments = [("Ce dossier concerne ", False), (lead, True)]
+
+    clauses = []
+    if sponsor:
+        clauses.append([("porte par ", False), (sponsor, True)])
+    if country:
+        clauses.append([("pays ", False), (country, True)])
+    if sector:
+        clauses.append([("secteur ", False), (sector, True)])
+    if client:
+        clauses.append([("client ", False), (client, True)])
+    if clauses:
+        segments.append((", ", False))
+        for i, clause in enumerate(clauses):
+            if i > 0:
+                segments.append((", ", False))
+            segments += clause
+    segments.append((".", False))
+
+    _write_segments(pdf, segments)
+    return True
 
 
 def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
@@ -364,6 +473,7 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     color = scoring["color"]
     mode_label = result_v4.get("reading_mode_label") or "-"
     context = result_v4.get("context") or {}
+    project_metadata = result_v4.get("project_metadata") or {}
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     pdf = _GridV4PDF()
@@ -383,6 +493,13 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     pdf.cell(0, 6, f"Genere le : {now_str}", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(4)
+
+    # --- Metadonnees projet (audit UI 2026-08-20) : AVANT le contexte
+    # bancaire (BLOC D) - "quel est ce projet" precede "comment la banque
+    # le classe". Extraction LLM fail-open (grid_metadata.py), section
+    # absente si rien trouve.
+    if _write_project_metadata_sentence(pdf, project_metadata):
+        pdf.ln(3)
 
     # --- Contexte du dossier (BLOC D, CC-V4-11) : AVANT le score, cf.
     # directive — saisie manuelle analyste, jamais extraite du document.
@@ -527,17 +644,9 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
         pdf.ln(2)
 
         for q in detail_questions:
-            gain = q.get("gain", 0)
-            net = q["penalty"] + gain
             pdf.set_font("Helvetica", "B", 11)
             pdf.multi_cell(0, 7, _safe(f"{q['code']} - {q['sous_theme']}"), new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", "", 9)
-            pdf.cell(0, 5, _safe(f"Statut : {q['status']}"), new_x="LMARGIN", new_y="NEXT")
-            pdf.cell(0, 5, _safe(f"Mitigation : {q.get('mitigation_label') or '-'}"), new_x="LMARGIN", new_y="NEXT")
-            pdf.cell(
-                0, 5, f"Penalite : {q['penalty']} | Gain : {gain:+d} | Net : {net}",
-                new_x="LMARGIN", new_y="NEXT",
-            )
+            _write_question_sentence(pdf, q)
             pdf.ln(1)
 
             ev_r = q.get("evidence_r")
@@ -634,6 +743,7 @@ def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx")
     """
     scoring = result_v4["scoring"]
     context = result_v4.get("context") or {}
+    project_metadata = result_v4.get("project_metadata") or {}
     wb = Workbook()
 
     # --- Feuille Synthese ---
@@ -644,6 +754,20 @@ def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx")
     ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True, size=14)
     ws1.append([project_name or "-", datetime.now().strftime("%Y-%m-%d %H:%M")])
     ws1.append([])
+
+    # --- Metadonnees projet (audit UI 2026-08-20) : AVANT le contexte
+    # bancaire - extraction LLM fail-open (grid_metadata.py), section
+    # absente si rien trouve (jamais une valeur inventee).
+    if any(project_metadata.get(k) for k in ("sponsor", "country", "sector", "client", "project_type")):
+        ws1.append(["PROJET"])
+        ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True)
+        _write_header_row(ws1, ws1.max_row + 1, ["Sponsor", "Pays", "Secteur", "Client", "Type de projet"])
+        ws1.append([
+            project_metadata.get("sponsor") or "-", project_metadata.get("country") or "-",
+            project_metadata.get("sector") or "-", project_metadata.get("client") or "-",
+            project_metadata.get("project_type") or "-",
+        ])
+        ws1.append([])
 
     ws1.append(["CONTEXTE DU DOSSIER"])
     ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True)

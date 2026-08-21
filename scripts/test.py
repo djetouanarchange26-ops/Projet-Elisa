@@ -232,9 +232,25 @@ def test_unit():
     # déterministe (fpdf2/openpyxl), pas de LLM.
     test_grid_v4_export()
 
+    # 1.17a Phrase narrative statut/mitigation dans le PDF (retour Elisa
+    # 2026-08-20) — purement déterministe, pas de LLM.
+    test_pdf_question_sentence()
+
+    # 1.17b Groupes de l'Executive Risk Summary (audit UI 2026-08-20) —
+    # purement déterministe, pas de LLM, pas de Streamlit.
+    test_grid_display_executive_summary()
+
+    # 1.17c Conservation des analyses sur disque (analysis_store.py) —
+    # purement déterministe, isolé dans un dossier temporaire.
+    test_analysis_store()
+
     # 1.18 Détection automatique du type de document (R11, grid_doctype.py)
     # — backend LLM monkey-patché, pas d'appel réseau réel.
     test_grid_doctype()
+
+    # 1.18b Métadonnées projet (grid_metadata.py, audit UI 2026-08-20) —
+    # backend LLM monkey-patché, pas d'appel réseau réel.
+    test_grid_metadata()
 
     # 1.19 R10 — catégories étendues du filtre de sujet (AMBIGU, INDIRECT)
     # — string-only sur les prompts + parsing, pas de LLM.
@@ -470,6 +486,82 @@ def test_grid_doctype():
               result_garbage["source"].startswith("fallback"))
         _test("Réponse LLM inexploitable + indice AMR -> Type 2 par heuristique",
               result_garbage["document_type"] == 2, f"Obtenu : {result_garbage}")
+
+    finally:
+        llm_backend._dispatch = _orig_dispatch
+
+
+def test_grid_metadata():
+    """Tests des métadonnées projet (sponsor/pays/secteur/client/type de
+    projet — grid_metadata.py, audit UI 2026-08-20). Backend LLM
+    monkey-patché (même idiome que test_grid_doctype), pas d'appel réseau
+    réel. Contrairement à grid_doctype.py, PAS de repli heuristique ici
+    (aucun équivalent lexical raisonnable pour deviner un sponsor) —
+    fail-open = tous les champs à None, source='indisponible'."""
+    print("\n--- 1.18b Métadonnées projet (grid_metadata.py) ---\n")
+
+    import json as json_module
+    import llm_backend
+    import grid_metadata
+
+    _orig_dispatch = llm_backend._dispatch
+
+    try:
+        # --- Extraction complète, tous les champs trouvés ---
+        def _full_dispatch(backend, prompt, model, options, timeout, response_format=None):
+            return json_module.dumps({
+                "sponsor": "ABC Energy", "country": "Kenya", "sector": "Énergie renouvelable",
+                "client": "XYZ SPV", "project_type": "Parc éolien",
+            })
+        llm_backend._dispatch = _full_dispatch
+        result = grid_metadata.detect_project_metadata("Texte de test quelconque.")
+        _test("Extraction complète : sponsor correct", result["sponsor"] == "ABC Energy", f"Obtenu : {result}")
+        _test("Extraction complète : country correct", result["country"] == "Kenya")
+        _test("Extraction complète : sector correct", result["sector"] == "Énergie renouvelable")
+        _test("Extraction complète : client correct", result["client"] == "XYZ SPV")
+        _test("Extraction complète : project_type correct", result["project_type"] == "Parc éolien")
+        _test("Extraction complète : source='llm'", result["source"] == "llm")
+
+        # --- Extraction partielle : certains champs absents du document ---
+        def _partial_dispatch(backend, prompt, model, options, timeout, response_format=None):
+            return json_module.dumps({
+                "sponsor": "ABC Energy", "country": None, "sector": None,
+                "client": None, "project_type": None,
+            })
+        llm_backend._dispatch = _partial_dispatch
+        result_partial = grid_metadata.detect_project_metadata("Texte de test.")
+        _test("Extraction partielle : sponsor trouvé", result_partial["sponsor"] == "ABC Energy")
+        _test("Extraction partielle : country=None (jamais inventé)", result_partial["country"] is None)
+        _test("Extraction partielle : source='llm' même partiel", result_partial["source"] == "llm")
+
+        # --- JSON avec backticks markdown (tolérance de parsing) ---
+        def _fenced_dispatch(backend, prompt, model, options, timeout, response_format=None):
+            return "```json\n" + json_module.dumps({"sponsor": "Fenced Corp"}) + "\n```"
+        llm_backend._dispatch = _fenced_dispatch
+        result_fenced = grid_metadata.detect_project_metadata("Texte de test.")
+        _test("JSON avec backticks : parsing tolérant", result_fenced["sponsor"] == "Fenced Corp",
+              f"Obtenu : {result_fenced}")
+
+        # --- Fail-open : LLM injoignable -> tous les champs à None, PAS
+        # d'exception, PAS de repli heuristique (contrairement à R11) ---
+        def _broken_dispatch(backend, prompt, model, options, timeout, response_format=None):
+            raise RuntimeError("backend injoignable (simulation)")
+        llm_backend._dispatch = _broken_dispatch
+        result_fail = grid_metadata.detect_project_metadata("Texte de test.")
+        _test("Fail-open : pas d'exception, dict retourné", isinstance(result_fail, dict))
+        _test("Fail-open : source='indisponible'", result_fail["source"] == "indisponible",
+              f"Obtenu : {result_fail}")
+        _test("Fail-open : tous les champs à None (aucune valeur inventée)",
+              all(result_fail[f] is None for f in ("sponsor", "country", "sector", "client", "project_type")),
+              f"Obtenu : {result_fail}")
+
+        # --- Réponse LLM inexploitable (JSON invalide) -> fail-open ---
+        def _garbage_dispatch(backend, prompt, model, options, timeout, response_format=None):
+            return "réponse illisible sans JSON valide"
+        llm_backend._dispatch = _garbage_dispatch
+        result_garbage = grid_metadata.detect_project_metadata("Texte de test.")
+        _test("Réponse inexploitable -> fail-open, pas de crash",
+              result_garbage["source"] == "indisponible", f"Obtenu : {result_garbage}")
 
     finally:
         llm_backend._dispatch = _orig_dispatch
@@ -2242,6 +2334,235 @@ def test_grid_v4_export():
           ])
 
 
+def test_pdf_question_sentence():
+    """Phrase narrative statut/mitigation/impact (export._question_status_
+    sentence), remplace les lignes brutes 'Statut : OUI' / 'Mitigation :
+    NON - forme insuffisante' / 'Penalite : -15 | Gain : +0 | Net : -15'
+    dans la section 'Detail par question' du PDF (cf. retour Elisa
+    2026-08-20, "en faire un vrai rapport" — même démarche que la phrase
+    de contexte dossier, grid_display._format_context_sentence). N'est
+    appelée que pour status OUI/INCONNU (cf. docstring de la fonction :
+    NA/NON n'apparaissent jamais dans cette section du PDF). Purement
+    déterministe (segments testés directement), pas de LLM."""
+    print("\n--- 1.17a Phrase narrative statut/mitigation (export.py, PDF) ---\n")
+
+    import export
+
+    def _seg_text(segments):
+        return "".join(t for t, _ in segments)
+
+    # --- INCONNU : pas de détail mitigation, pénalité nulle ---
+    q_inconnu = {"status": "INCONNU", "penalty": 0, "gain": 0, "mitigation_label": None}
+    text = _seg_text(export._question_status_sentence(q_inconnu))
+    _test("INCONNU : phrase mentionne l'absence de conclusion", "ne permettent pas de conclure" in text)
+    _test("INCONNU : aucune pénalité mentionnée", "Aucune penalite appliquee" in text)
+
+    # --- OUI, mitigation jamais évaluée (mitigation_label=None) ---
+    q_oui_sans_mitigation = {"status": "OUI", "penalty": -25, "gain": 0, "mitigation_label": None}
+    segs = export._question_status_sentence(q_oui_sans_mitigation)
+    text = _seg_text(segs)
+    _test("OUI sans mitigation : phrase mentionne l'absence d'évaluation",
+          "Aucune mitigation n'a ete evaluee" in text)
+    _test("OUI sans mitigation : pénalité en gras", any(b and "-25" in t for t, b in segs))
+
+    # --- OUI, mitigation NON - forme insuffisante (gain=0) ---
+    q_oui_mitigation_non = {
+        "status": "OUI", "penalty": -15, "gain": 0,
+        "mitigation_label": "NON — forme insuffisante",
+    }
+    segs = export._question_status_sentence(q_oui_mitigation_non)
+    text = _seg_text(segs)
+    _test("OUI + mitigation insuffisante : label mentionné", "NON — forme insuffisante" in text)
+    _test("OUI + mitigation insuffisante : 'aucun gain' mentionné", "aucun gain d'attenuation" in text)
+    _test("OUI + mitigation insuffisante : impact net = -15 en gras",
+          any(b and "-15" in t for t, b in segs))
+    _test("OUI + mitigation insuffisante : mitigation_label rendu en gras",
+          any(b and t == "NON — forme insuffisante" for t, b in segs))
+
+    # --- OUI, mitigation OUI - prouvée (gain>0) ---
+    q_oui_mitigation_ok = {
+        "status": "OUI", "penalty": -25, "gain": 5,
+        "mitigation_label": "OUI — prouvee",
+    }
+    segs = export._question_status_sentence(q_oui_mitigation_ok)
+    text = _seg_text(segs)
+    _test("OUI + mitigation prouvée : phrase mentionne la mise en place", "mise en place" in text)
+    _test("OUI + mitigation prouvée : gain positif en gras", any(b and "+5" in t for t, b in segs))
+    _test("OUI + mitigation prouvée : impact net = -20 en gras", any(b and "-20" in t for t, b in segs))
+
+    # --- Smoke test : écriture réelle sur un objet fpdf2, ne lève pas ---
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    for q in (q_inconnu, q_oui_sans_mitigation, q_oui_mitigation_non, q_oui_mitigation_ok):
+        export._write_question_sentence(pdf, q)
+    _test("_write_question_sentence : aucune exception sur les 4 scénarios", True)
+
+
+def test_grid_display_executive_summary():
+    """Groupes de l'Executive Risk Summary (grid_display.py, audit UI
+    2026-08-20) : _top_risk_drivers/_needs_verification/_favorable_points
+    sont des fonctions pures (pas de Streamlit) qui dérivent 3 groupes des
+    mêmes 12 questions — aucune nouvelle donnée, juste un tri/filtre sur
+    penalty/gain/status/confidence_note/silence_applied/atteste/
+    mitigation_status déjà présents dans le contrat grid_result.py.
+    Fixture synthétique à 6 questions couvrant les 3 groupes + les
+    exclusions attendues (NA nulle part, NON par silence hors favorable,
+    OUI sans doute hors vérification)."""
+    print("\n--- 1.17b Groupes Executive Summary (grid_display.py, audit UI) ---\n")
+
+    import grid_display
+
+    q_a11 = {
+        "code": "A.1.1", "sous_theme": "Communautaire", "status": "OUI",
+        "penalty": -25, "gain": 5, "mitigation_status": "OUI_PROUVEE",
+        "mitigation_label": "OUI — prouvée",
+        "evidence_r": {"passage": "x" * 250, "page": 3},
+        "confidence_note": None, "silence_applied": False, "atteste": False,
+    }
+    q_b21 = {
+        "code": "B.2.1", "sous_theme": "Pollution Air", "status": "OUI",
+        "penalty": -15, "gain": 0, "mitigation_status": None, "mitigation_label": None,
+        "evidence_r": {"passage": "dust emissions observed", "page": 9},
+        "confidence_note": "Le LLM hésite sur la portée exacte du passage.",
+        "silence_applied": False, "atteste": False,
+    }
+    q_b22 = {
+        "code": "B.2.2", "sous_theme": "Pollution Eau", "status": "INCONNU",
+        "penalty": 0, "gain": 0, "mitigation_status": None, "mitigation_label": None,
+        "evidence_r": None, "confidence_note": "Aucun élément n'a été trouvé.",
+        "silence_applied": True, "atteste": False,
+    }
+    q_b31 = {
+        "code": "B.3.1", "sous_theme": "Gouvernance", "status": "NON",
+        "penalty": 0, "gain": 0, "mitigation_status": None, "mitigation_label": None,
+        "evidence_r": {"passage": "no baseline gap identified", "page": 10},
+        "confidence_note": None, "silence_applied": False, "atteste": True,
+    }
+    q_b12 = {
+        "code": "B.1.2", "sous_theme": "Griefs", "status": "NON",
+        "penalty": 0, "gain": 0, "mitigation_status": None, "mitigation_label": None,
+        "evidence_r": None, "confidence_note": None, "silence_applied": True, "atteste": False,
+    }
+    q_a21 = {
+        "code": "A.2.1", "sous_theme": "Faisabilité", "status": "NA",
+        "penalty": 0, "gain": 0, "mitigation_status": None, "mitigation_label": None,
+        "evidence_r": {"passage": "hors périmètre (na_module)", "page": None},
+        "confidence_note": None, "silence_applied": False, "atteste": False,
+    }
+    questions = [q_a11, q_b21, q_b22, q_b31, q_b12, q_a21]
+
+    # --- Top Risk Drivers : OUI triés par impact net (le plus négatif
+    # d'abord) — A.1.1 net=-20 avant B.2.1 net=-15, malgré l'ordre grille
+    # inverse (A avant B mais -20 "pèse plus" que -15). ---
+    drivers = grid_display._top_risk_drivers(questions)
+    _test("Top Risk Drivers : seuls les OUI (2/6)", [q["code"] for q in drivers] == ["A.1.1", "B.2.1"],
+          f"Obtenu : {[q['code'] for q in drivers]}")
+    _test("Top Risk Drivers : triés par impact net décroissant (-20 avant -15)",
+          [grid_display._net(q) for q in drivers] == [-20, -15])
+
+    # --- Points à vérifier : INCONNU + OUI avec doute LLM non-silence
+    # (B.2.1) — A.1.1 exclu (pas de confidence_note), B.1.2 exclu (NON). ---
+    to_check = grid_display._needs_verification(questions)
+    _test("À vérifier : B.2.1 (doute LLM) + B.2.2 (INCONNU), rien d'autre",
+          {q["code"] for q in to_check} == {"B.2.1", "B.2.2"},
+          f"Obtenu : {[q['code'] for q in to_check]}")
+
+    # --- Points favorables : A.1.1 (mitigation prouvée) + B.3.1 (NON
+    # attesté) — B.1.2 exclu (NON par silence, pas de preuve explicite). ---
+    favorable = grid_display._favorable_points(questions)
+    _test("Favorables : A.1.1 (mitigation prouvée) + B.3.1 (NON attesté), rien d'autre",
+          {q["code"] for q in favorable} == {"A.1.1", "B.3.1"},
+          f"Obtenu : {[q['code'] for q in favorable]}")
+
+    # --- NA (A.2.1) n'apparaît dans AUCUN des 3 groupes ---
+    all_grouped_codes = (
+        {q["code"] for q in drivers} | {q["code"] for q in to_check} | {q["code"] for q in favorable}
+    )
+    _test("NA (A.2.1) absent des 3 groupes de l'Executive Summary", "A.2.1" not in all_grouped_codes)
+
+    # --- Helpers d'affichage : libellé métier avant le code ---
+    line = grid_display._question_line(q_a11)
+    _test("_question_line : sous_theme avant le code (libellé métier en avant)",
+          line.index("Communautaire") < line.index("A.1.1"))
+    _test("_question_line : impact net affiché", "-20" in line)
+
+    truncated = grid_display._truncated_verbatim(q_a11["evidence_r"]["passage"])
+    _test("_truncated_verbatim : tronqué à 200 caractères + ellipse",
+          len(truncated) == 201 and truncated.endswith("…"))
+    _test("_truncated_verbatim : None si pas de passage", grid_display._truncated_verbatim(None) is None)
+
+
+def test_analysis_store():
+    """Conservation des analyses sur disque (scripts/analysis_store.py,
+    2026-08-20, directive "un seul document + conservation") : save/list/
+    load, purement déterministe (pas de LLM), isolé dans un dossier
+    temporaire — ne touche JAMAIS data/analyses/ du vrai repo (ANALYSES_DIR
+    monkey-patché puis restauré, même idiome que config.LLM_BACKEND
+    ailleurs dans ce fichier)."""
+    print("\n--- 1.17c Conservation des analyses (analysis_store.py) ---\n")
+
+    import tempfile
+    from pathlib import Path
+    from datetime import datetime as _dt
+    import analysis_store
+
+    fake_result = _build_fake_v4_result()
+    _orig_dir = analysis_store.ANALYSES_DIR
+
+    with tempfile.TemporaryDirectory() as tmp:
+        analysis_store.ANALYSES_DIR = Path(tmp)
+        try:
+            # --- save_analysis ---
+            analyzed_at = _dt(2026, 8, 20, 14, 30, 0)
+            path = analysis_store.save_analysis(
+                fake_result, document="CBG Expansion.pdf", documents=["CBG Expansion.pdf"],
+                analyzed_at=analyzed_at,
+            )
+            _test("save_analysis : retourne un Path non None", path is not None)
+            _test("save_analysis : le fichier existe sur disque", path is not None and path.exists())
+
+            # --- list_analyses ---
+            summaries = analysis_store.list_analyses()
+            _test("list_analyses : 1 entrée après 1 sauvegarde", len(summaries) == 1,
+                  f"Obtenu : {len(summaries)}")
+            summary = summaries[0]
+            _test("list_analyses : document correct", summary["document"] == "CBG Expansion.pdf")
+            _test("list_analyses : score correct", summary["score"] == fake_result["scoring"]["score"])
+            _test("list_analyses : color correct", summary["color"] == fake_result["scoring"]["color"])
+
+            # --- load_analysis : round-trip complet (result_v4 intact) ---
+            loaded = analysis_store.load_analysis(summary["path"])
+            _test("load_analysis : non None", loaded is not None)
+            if loaded:
+                _test("load_analysis : result_v4 round-trip identique",
+                      loaded["result_v4"]["questions"] == fake_result["questions"])
+
+            # --- Plusieurs analyses : la plus récente en tête ---
+            analysis_store.save_analysis(
+                fake_result, document="Aysha Wind.pdf", documents=["Aysha Wind.pdf"],
+                analyzed_at=_dt(2026, 8, 20, 15, 0, 0),
+            )
+            summaries2 = analysis_store.list_analyses()
+            _test("list_analyses : 2 entrées après 2 sauvegardes", len(summaries2) == 2,
+                  f"Obtenu : {len(summaries2)}")
+            _test("list_analyses : la plus récente en premier",
+                  summaries2[0]["document"] == "Aysha Wind.pdf",
+                  f"Obtenu : {summaries2[0]['document']!r}")
+
+            # --- Fichier corrompu : ignoré, pas d'exception (fail-open) ---
+            (Path(tmp) / "corrupted.json").write_text("{not valid json", encoding="utf-8")
+            summaries3 = analysis_store.list_analyses()
+            _test("list_analyses : fichier corrompu ignoré, pas d'exception",
+                  len(summaries3) == 2, f"Obtenu : {len(summaries3)}")
+
+            # --- load_analysis sur un fichier manquant : None, pas d'exception ---
+            missing = analysis_store.load_analysis(Path(tmp) / "does_not_exist.json")
+            _test("load_analysis : None sur un fichier manquant (fail-open)", missing is None)
+        finally:
+            analysis_store.ANALYSES_DIR = _orig_dir
+
+
 def test_grid_questions_v4():
     """Vérifie la structure de QUESTIONS (grid_questions.py), RECONSTRUITE
     pour CC-V4-11 sur les 12 codes exacts de la Maquette Vierge : 6+6 par
@@ -2817,15 +3138,22 @@ def print_summary():
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    any_tier_flag = "--unit" in args or "--integ" in args or "--business" in args
 
+    # BUG CORRIGÉ (2026-08-20) : c'était un elif, pas 3 `if` indépendants —
+    # `python scripts/test.py --unit --integ --business` (commande
+    # documentée dans CLAUDE.md, "avant chaque commit") n'exécutait donc
+    # QUE --unit, --integ et --business n'étaient jamais lancés malgré la
+    # ligne de commande. Seul `python scripts/test.py` sans flag (branche
+    # `else` ci-dessous) lançait vraiment les 3 tiers.
     if "--unit" in args:
         test_unit()
-    elif "--integ" in args:
+    if "--integ" in args:
         test_integration()
-    elif "--business" in args:
+    if "--business" in args:
         test_business()
-    else:
-        # Tout lancer
+    if not any_tier_flag:
+        # Tout lancer (aucun flag reconnu passé)
         test_unit()
         test_integration()
         test_business()
