@@ -380,6 +380,12 @@ def _render_risk_driver_group(questions):
         verbatim = _truncated_verbatim((q.get("evidence_r") or {}).get("passage"))
         if verbatim:
             st.caption(f'"{verbatim}"')
+        elif q.get("confidence_note"):
+            # OUI sans verbatim (cas _SILENCE_CONFIRMS_ABSENCE, B.3.1/B.3.2 —
+            # cf. grid_analyze.py) : sans ce repli, une pénalité s'affichait
+            # ici sans aucune justification visible avant de déplier la
+            # grille détaillée (retour Elisa 2026-08-21, PDF Vorotan).
+            st.caption(q["confidence_note"])
 
     st.markdown("---")
 

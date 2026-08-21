@@ -578,9 +578,12 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
                 pdf.set_text_color(90, 90, 90)
                 pdf.multi_cell(0, 5, _safe(f'  "{display}"'), new_x="LMARGIN", new_y="NEXT")
                 pdf.set_text_color(0, 0, 0)
-            elif q["status"] == "INCONNU":
+            elif q["status"] == "INCONNU" or q.get("confidence_note"):
                 # Directive "gestion INCONNU" (2026-08-20) : rien invente
-                # quand aucun element n'a ete extrait.
+                # quand aucun element n'a ete extrait. Etendu (2026-08-21)
+                # au cas OUI sans verbatim (_SILENCE_CONFIRMS_ABSENCE,
+                # B.3.1/B.3.2) : sans ca, une penalite s'affichait ici sans
+                # aucune justification visible avant la page 3.
                 no_element_note = q.get("confidence_note") or "Aucun element n'a ete trouve."
                 pdf.set_font("Helvetica", "I", 9)
                 pdf.set_text_color(90, 90, 90)
@@ -799,7 +802,13 @@ def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx")
         for q in signal_questions:
             ev_r = q.get("evidence_r")
             verbatim = ev_r.get("passage") if ev_r else None
-            display = (verbatim[:200] + "...") if verbatim and len(verbatim) > 200 else (verbatim or "-")
+            if verbatim:
+                display = (verbatim[:200] + "...") if len(verbatim) > 200 else verbatim
+            else:
+                # Cas OUI/INCONNU sans verbatim (silence R5, dont
+                # _SILENCE_CONFIRMS_ABSENCE B.3.1/B.3.2) : confidence_note
+                # plutot qu'un simple "-" qui ne justifie pas la penalite.
+                display = q.get("confidence_note") or "-"
             ws1.append([q["code"], q["sous_theme"], q["penalty"], display])
     _autofit(ws1, [30, 30, 14, 70])
 
