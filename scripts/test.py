@@ -2311,6 +2311,20 @@ def test_grid_v4_export():
     _test("build_grid_v4_pdf : fonctionne aussi sans project_name",
           pdf_bytes_no_name[:4] == b"%PDF")
 
+    # --- Nom du fichier telecharge (grid_display._slugify_filename) ---
+    # BUG (2026-08-24, retour Elisa/Archange) : "esg_grid_v4.pdf"/".xlsx"
+    # etait fixe quel que soit le dossier -- plusieurs telechargements
+    # d'affilee s'ecrasaient les uns les autres dans le navigateur.
+    import grid_display
+
+    _test("_slugify_filename : deux dossiers differents -> noms differents",
+          grid_display._slugify_filename("Vorotan Refi.pdf") != grid_display._slugify_filename("CBG Expansion.pdf"))
+    _test("_slugify_filename : normalise espaces/parentheses/points",
+          grid_display._slugify_filename("Vorotan Refi (2026-08-21).pdf") == "Vorotan_Refi_2026-08-21_pdf",
+          f"Obtenu : {grid_display._slugify_filename('Vorotan Refi (2026-08-21).pdf')!r}")
+    _test("_slugify_filename : project_name vide -> None (repli sur nom generique)",
+          grid_display._slugify_filename("") is None and grid_display._slugify_filename(None) is None)
+
     # --- Excel ---
     xlsx_bytes = export.build_grid_v4_excel(result, project_name="Test")
     _test("build_grid_v4_excel : retourne des bytes non vides",

@@ -79,6 +79,7 @@ vrai après cette restructuration) :
 """
 
 import logging
+import re
 from datetime import datetime
 
 import streamlit as st
@@ -507,10 +508,33 @@ def _render_grid(result_v4):
 # EXPORTS
 # ============================================================================
 
+def _slugify_filename(project_name, max_len=60):
+    """Nom de fichier de téléchargement sûr à partir de `project_name` —
+    même esprit que app._safe_filename/analysis_store._slugify, dupliqué
+    ici pour ne pas créer de dépendance grid_display.py -> app.py (cf.
+    analysis_store.py : "app.py importe scripts/, jamais l'inverse").
+    Retourne None si `project_name` est vide, pour laisser l'appelant
+    retomber sur un nom générique plutôt que suffixer par rien."""
+    if not project_name:
+        return None
+    stem = project_name.rsplit(".", 1)[0] if "." in project_name.split("(")[0] else project_name
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+    return safe[:max_len] or None
+
+
 def _render_export_buttons(result_v4, project_name):
     # Import différé (CC-V4-10) : même principe que grid_analyze/grid_sections
     # dans app.py — export.py n'est requis que si l'onglet V4 est rendu.
     import export
+
+    # BUG (2026-08-24, retour Elisa/Archange) : "esg_grid_v4.pdf"/".xlsx"
+    # était un nom de fichier FIXE, identique pour tous les dossiers
+    # téléchargés (project_name reçu mais jamais utilisé pour le nom du
+    # fichier) — plusieurs rapports téléchargés d'affilée s'écrasaient les
+    # uns les autres dans le dossier de téléchargement du navigateur.
+    slug = _slugify_filename(project_name)
+    pdf_name = f"esg_grid_v4_{slug}.pdf" if slug else "esg_grid_v4.pdf"
+    excel_name = f"esg_grid_v4_{slug}.xlsx" if slug else "esg_grid_v4.xlsx"
 
     st.markdown("---")
     col_pdf, col_excel = st.columns(2)
@@ -520,7 +544,7 @@ def _render_export_buttons(result_v4, project_name):
         st.download_button(
             label="📥 Télécharger le rapport PDF",
             data=pdf_bytes,
-            file_name="esg_grid_v4.pdf",
+            file_name=pdf_name,
             mime="application/pdf",
         )
 
@@ -529,6 +553,6 @@ def _render_export_buttons(result_v4, project_name):
         st.download_button(
             label="📥 Télécharger le détail Excel",
             data=excel_bytes,
-            file_name="esg_grid_v4.xlsx",
+            file_name=excel_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
