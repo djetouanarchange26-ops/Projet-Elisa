@@ -1840,8 +1840,9 @@ def test_grid_analyze_v4():
         _test("B.3.1 (confirms_absence) -> confidence_note DIFFÉRENT du texte canonique générique",
               b31_empty["confidence_note"] != "Aucun élément n'a été trouvé.",
               f"Obtenu : {b31_empty['confidence_note']!r}")
-        _test("B.3.1 (confirms_absence) -> confidence_note explique le mécanisme R5",
-              "risque évalué" in (b31_empty["confidence_note"] or ""),
+        _test("B.3.1 (confirms_absence) -> confidence_note explique le mécanisme en clair (pas de jargon 'R5')",
+              "pénalité" in (b31_empty["confidence_note"] or "")
+              and "R5" not in (b31_empty["confidence_note"] or ""),
               f"Obtenu : {b31_empty['confidence_note']!r}")
 
         try:

@@ -108,9 +108,19 @@ _NO_ELEMENT_FOUND = "Aucun élément n'a été trouvé."
 # "pourquoi ça flag si ya rien de trouvé"). Même texte canonique
 # invariable (pas de reformulation LLM), juste une variante explicite sur
 # CE cas particulier de la règle R5.
+# REFORMULATION (2026-08-24, retour "les gars ne comprennent pas la
+# phrase") : "(cf. règle R5)" retiré — un renvoi à un code de règle
+# interne n'explique rien côté métier. Le texte explicite maintenant le
+# mécanisme en clair (pourquoi CE silence pénalise, contrairement à
+# d'autres questions où rien trouvé = pas de pénalité) plutôt que de
+# pointer vers une référence opaque.
 _SILENCE_CONFIRMS_ABSENCE_NOTE = (
-    "Aucune mention trouvée dans le document. Pour ce critère, l'absence "
-    "de donnée constitue en elle-même le risque évalué (cf. règle R5)."
+    "Aucune mention trouvée dans le document. Contrairement aux autres "
+    "critères, cette question porte sur l'ABSENCE d'un dispositif (donnée "
+    "de référence ou reporting périodique) : ne rien trouver dans le "
+    "rapport confirme donc que ce dispositif est manquant, d'où la "
+    "pénalité — ce n'est pas une incertitude sur le document, mais un "
+    "risque avéré."
 )
 
 
