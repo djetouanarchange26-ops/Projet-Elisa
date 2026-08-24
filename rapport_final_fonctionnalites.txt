@@ -1,0 +1,1762 @@
+================================================================================
+RAPPORT FINAL — ESG RISK INTELLIGENCE
+Explication complète du projet, pour tout le monde
+================================================================================
+
+Ce rapport explique ce que fait vraiment le programme "ESG Risk
+Intelligence", comment il est construit, et comment j'ai fait pour
+l'analyser. Tout est écrit en français simple. Je n'ai rien inventé :
+chaque phrase de ce rapport correspond à un morceau de code que j'ai
+vraiment lu, fichier par fichier.
+
+
+
+================================================================================
+1. RÉSUMÉ ULTRA SIMPLE (pour un enfant de 5 ans)
+================================================================================
+
+Imagine une grande banque qui prête de l'argent à des entreprises pour
+construire des choses : des barrages, des usines, des mines, des parcs
+éoliens.
+
+Avant de prêter cet argent, la banque doit vérifier que le projet ne va
+pas faire de mal aux gens qui habitent autour, ni à la nature. Pour ça,
+quelqu'un écrit un long rapport (parfois 70 pages !) qui raconte tout ce
+qui se passe sur le chantier.
+
+Le problème : une personne qui doit lire 70 pages pour chercher les
+dangers, ça prend beaucoup de temps, et on peut rater un détail important
+caché au milieu du texte.
+
+"ESG Risk Intelligence" est comme un assistant très rapide qui lit le
+rapport à la place de la personne, et qui répond à 12 questions précises,
+par exemple : "Est-ce qu'il y a eu une grève sur le chantier ?" ou
+"Est-ce qu'il y a trop de pollution dans l'air ?". Pour chaque question,
+l'assistant dit OUI ou NON, et il montre la phrase exacte du rapport qui
+lui a permis de répondre — comme un détective qui montre sa preuve.
+
+À la fin, l'assistant donne une note sur 100 : on commence à 100 points
+(parfait), et on enlève des points à chaque problème trouvé. Un peu
+comme une punition qui enlève des bons points, sauf qu'on peut aussi en
+regagner un peu si le problème a été réparé.
+
+QUI L'UTILISE ?
+
+Une analyste de la banque (dans ce projet, elle s'appelle Elisa). C'est
+elle qui décide, en s'aidant de la note et des explications de
+l'assistant, si le projet est trop risqué ou non. L'assistant ne décide
+jamais tout seul — il donne juste son avis, comme un conseiller.
+
+CE QU'IL PERMET DE FAIRE, EN UNE PHRASE
+
+Charger un rapport (PDF), poser 12 questions précises dessus, obtenir une
+note sur 100 avec les preuves, et pouvoir imprimer tout ça en PDF ou en
+Excel pour le montrer à d'autres personnes de la banque.
+
+
+
+================================================================================
+2. VUE D'ENSEMBLE DU PROJET
+================================================================================
+
+Ce programme n'est PAS un site internet classique avec un "petit robot
+côté écran" et un "gros robot côté serveur" qui se parlent par Internet.
+C'est une seule application, qui tourne sur un seul ordinateur (ou un
+serveur), et qui fait tout elle-même : l'écran ET le cerveau sont dans
+le même programme. On appelle ça une application "Streamlit" (Streamlit
+est l'outil qui permet de dessiner des écrans juste avec du code Python,
+sans avoir à écrire de site web séparé).
+
+Voici les grandes pièces du puzzle :
+
+--------------------------------------------------------------------------
+A. L'ÉCRAN (ce que l'analyste voit et touche)
+--------------------------------------------------------------------------
+Rôle : afficher les boutons, les champs à remplir, les résultats, les
+graphiques.
+Fichier principal : app.py (environ 1600 lignes).
+Analogie : c'est le tableau de bord d'une voiture — les boutons, les
+cadrans, l'écran du GPS. Tout ce qu'on voit et sur quoi on clique.
+
+--------------------------------------------------------------------------
+B. LE CERVEAU (les calculs et les décisions)
+--------------------------------------------------------------------------
+Rôle : lire le texte du rapport, poser les 12 questions, calculer la
+note, décider des couleurs (vert/jaune/orange/rouge).
+Fichiers principaux : grid_analyze.py, grid_scoring.py, grid_questions.py,
+grid_prompts.py, grid_result.py.
+Analogie : c'est le moteur de la voiture. On ne le voit pas directement,
+mais c'est lui qui fait avancer tout le reste.
+
+--------------------------------------------------------------------------
+C. LE ROBOT QUI LIT ET COMPREND LE TEXTE (l'intelligence artificielle)
+--------------------------------------------------------------------------
+Rôle : lire un morceau de texte et répondre à une question dessus
+("est-ce que ce passage parle d'une grève ?"). Ce robot ne vit pas dans
+le programme : on lui envoie un message par Internet (ou vers un
+programme installé sur le même ordinateur), et il répond.
+Fichier principal : llm_backend.py (le "standard téléphonique" qui
+appelle ce robot), plus deux façons de l'appeler :
+  - "Together AI" : un robot qui habite sur un serveur, quelque part sur
+    Internet (c'est le choix par défaut aujourd'hui).
+  - "Ollama" : un robot installé directement sur l'ordinateur de la
+    banque, qui ne sort jamais sur Internet (utile si on ne veut rien
+    envoyer dehors).
+Analogie : c'est comme appeler un ami très cultivé au téléphone à chaque
+fois qu'on a une question sur un texte, plutôt que d'essayer de deviner
+tout seul.
+
+--------------------------------------------------------------------------
+D. LA MÉMOIRE / LES ARCHIVES (la "base de données")
+--------------------------------------------------------------------------
+Ce programme n'a PAS de vraie base de données comme celles qu'on trouve
+dans une grosse entreprise. Il range tout dans des fichiers, un peu
+comme des feuilles de papier rangées dans des chemises :
+
+  - models/ : contient les "fiches de comparaison" apprises à partir de
+    tous les anciens rapports (l'index FAISS, expliqué plus loin) et les
+    petits carnets où le robot IA note ses réponses pour ne pas avoir à
+    répondre deux fois à la même question (les "caches").
+  - data/processed/chunks.csv : un immense tableau qui contient tous les
+    petits morceaux de texte des anciens rapports, avec des étiquettes
+    dessus.
+  - data/analyses/ : un dossier où chaque analyse terminée est
+    sauvegardée dans un fichier, pour pouvoir la retrouver plus tard
+    sans refaire tout le travail.
+  - corpus/ : les vrais documents PDF/texte utilisés pour "apprendre" (le
+    passé de la banque).
+
+Analogie : au lieu d'une grande armoire high-tech avec un système de
+recherche automatique, ce projet utilise plein de petites chemises en
+carton bien rangées sur une étagère — plus simple, mais ça marche très
+bien pour la taille du projet.
+
+--------------------------------------------------------------------------
+E. LES "API" (les liens vers l'extérieur)
+--------------------------------------------------------------------------
+Il n'y a pas d'API au sens "site web pour d'autres programmes". Le seul
+lien vers l'extérieur est l'appel au robot IA (Together AI ou Ollama),
+décrit au point C. C'est une adresse Internet à laquelle le programme
+envoie une question et attend une réponse.
+
+--------------------------------------------------------------------------
+F. LES SERVICES EXTERNES / LE DÉPLOIEMENT
+--------------------------------------------------------------------------
+Quand le programme tourne "pour de vrai" (pas juste sur l'ordinateur du
+développeur), il utilise 3 boîtes séparées (appelées "containers
+Docker") qui se parlent entre elles :
+
+  1. "app" : le programme lui-même (l'écran + le cerveau).
+  2. "ollama" : le robot IA local, dans sa propre boîte.
+  3. "caddy" : un gardien à l'entrée qui demande un mot de passe avant de
+     laisser entrer qui que ce soit, et qui redirige la demande vers la
+     boîte "app".
+
+Analogie : imagine un immeuble avec un gardien à l'entrée (Caddy) qui
+vérifie ton badge, un bureau où on travaille (app), et une salle
+d'archives à côté (ollama) où on peut aller chercher un dossier — chaque
+pièce a sa porte, mais elles sont toutes dans le même immeuble.
+
+--------------------------------------------------------------------------
+SCHÉMA TRÈS SIMPLE
+--------------------------------------------------------------------------
+
+    [Analyste (Elisa)]
+            │
+            │  (ouvre son navigateur, mot de passe)
+            ▼
+    [Gardien à l'entrée — Caddy]
+            │
+            ▼
+    [L'application — écran + cerveau (app.py + scripts/)]
+            │
+            ├──────────────► [Fiches de comparaison — FAISS / chunks.csv]
+            │
+            └──────────────► [Robot IA — Together AI ou Ollama]
+                                      │
+                                      ▼
+                              (répond OUI/NON + la preuve)
+            │
+            ▼
+    [Résultat affiché à l'écran, + PDF/Excel à télécharger]
+            │
+            ▼
+    [Sauvegardé dans data/analyses/ pour plus tard]
+
+Petit résumé de cette partie : ce projet est une seule application (pas
+un site web séparé du serveur), qui range ses informations dans des
+fichiers plutôt qu'une vraie base de données, et qui appelle un robot IA
+par Internet ou en local à chaque fois qu'elle a besoin de comprendre un
+morceau de texte.
+
+
+
+================================================================================
+3. TOUTES LES FONCTIONNALITÉS RÉELLEMENT IMPLÉMENTÉES
+================================================================================
+
+Important : ce programme contient EN RÉALITÉ DEUX systèmes d'analyse
+complets, l'un à côté de l'autre :
+
+  - Le système ACTUEL, appelé "Grille V4" : c'est celui que l'analyste
+    utilise vraiment aujourd'hui. 12 questions précises, une note sur
+    100 calculée de façon simple (pas par une intelligence artificielle
+    pour le calcul lui-même).
+  - L'ANCIEN système, appelé "legacy" (mot anglais qui veut dire
+    "héritage") : il est toujours présent dans le code, toujours
+    fonctionnel, mais il n'est plus utilisé par défaut. On peut encore
+    l'allumer exprès pour comparer, mais ce n'est plus ce que voit
+    l'analyste normalement.
+
+Je décris d'abord le système actuel (partie A), puis l'ancien système
+toujours présent (partie B), puis les outils de coulisses qui préparent
+les données à l'avance (partie C).
+
+
+################################################################################
+PARTIE A — LE SYSTÈME ACTUEL : LA GRILLE ESG V4
+################################################################################
+
+--------------------------------------------------------------------------
+A.1 — Charger UN document et lancer une analyse
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Donner à l'assistant le rapport à lire, pour qu'il puisse répondre aux
+12 questions dessus.
+
+COMMENT ÇA FONCTIONNE ?
+1. L'analyste choisit "Charger un fichier" (un PDF ou un .txt) ou
+   "Coller le texte" (elle copie-colle directement le texte).
+2. Elle ne peut donner qu'UN SEUL document à la fois (avant, on pouvait
+   en mettre plusieurs, mais ça a été retiré — voir la fiche A.10 pour
+   comprendre pourquoi).
+3. Elle remplit 4 informations obligatoires sur le dossier (voir fiche
+   A.2) avant que le bouton "Lancer l'analyse" ne devienne cliquable.
+4. Elle clique sur "▶ Lancer l'analyse".
+
+CE QUI SE PASSE EN COULISSES
+Le programme sort le texte du PDF page par page, en collant un petit
+repère invisible "[PAGE:3]" au début de chaque page, pour se souvenir
+plus tard sur quelle page se trouvait chaque phrase importante. Ensuite,
+il découpe ce long texte en petits paragraphes d'environ 175 mots
+chacun (un peu comme découper un long collier en petites perles, pour
+pouvoir les examiner une par une).
+
+EXEMPLE CONCRET
+Elisa reçoit un PDF de 52 pages sur un barrage en Arménie. Elle clique
+sur "Charger un fichier", choisit le PDF, remplit les 4 champs du
+dossier, puis clique sur "Lancer l'analyse". Le programme affiche
+"Extraction du texte...", puis "✓ Texte extrait (98 000 caractères)",
+puis lance l'analyse.
+
+FICHIERS CONCERNÉS
+app.py (zone de dépôt du fichier, bouton, extraction du texte),
+scripts/search.py (fonction chunk_text, qui découpe le texte).
+
+
+--------------------------------------------------------------------------
+A.2 — Le "Contexte du dossier" (4 informations obligatoires)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Certaines informations ne peuvent PAS être devinées en lisant le
+rapport — elles dépendent de la banque elle-même, pas du projet. Le
+programme les demande donc directement à l'analyste, à la main.
+
+COMMENT ÇA FONCTIONNE ?
+Avant de pouvoir lancer une analyse, l'analyste doit remplir 4 cases :
+  - La classification "Equator Principles" (A, B ou C — une catégorie
+    de risque standard utilisée par les banques).
+  - Le statut de sensibilité du dossier (Sensible / Non sensible /
+    Watchlist).
+  - Le montant du financement.
+  - Le rôle de la banque dans l'opération (par exemple "Participant" ou
+    "Agent").
+Tant que les 4 cases ne sont pas remplies, le bouton "Lancer l'analyse"
+reste grisé.
+
+CE QUI SE PASSE EN COULISSES
+Ces 4 informations ne sont JAMAIS devinées à partir du texte du PDF —
+elles sont juste transportées telles quelles jusqu'au résultat final,
+sans jamais influencer la note sur 100. Elles servent seulement à
+donner du contexte humain à la lecture du résultat.
+
+EXEMPLE CONCRET
+Elisa remplit "Catégorie A", "Sensible", "600" (millions), "Participant".
+Ces 4 informations réapparaîtront plus tard dans le résumé du dossier
+et dans le PDF exporté, sous forme d'une phrase : "Ce dossier est
+classé Catégorie A, avec un statut de portefeuille Sensible, un
+financement de 600, la banque intervenant en tant que Participant."
+
+FICHIERS CONCERNÉS
+app.py (les 4 cases à remplir), grid_result.py (transport de ces
+informations dans le résultat final).
+
+
+--------------------------------------------------------------------------
+A.3 — Détection automatique du type de document
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Un rapport "avant de prêter l'argent" ne se lit pas de la même façon
+qu'un rapport "un an après, pour vérifier que tout va bien". Le
+programme doit d'abord deviner à quelle catégorie appartient le
+document, pour savoir comment le lire correctement.
+
+COMMENT ÇA FONCTIONNE ?
+Le programme envoie le début du document au robot IA et lui demande de
+choisir parmi 4 catégories :
+  1. Instruction / due diligence avant le prêt.
+  2. Rapport annuel écrit par l'opérateur lui-même.
+  3. Rapport de suivi sur plusieurs années, écrit par un contrôleur
+     indépendant.
+  4. Rapport centré sur un seul sujet (par exemple juste la pollution de
+     l'air).
+Le robot répond avec sa réponse ET son niveau de confiance (haute,
+moyenne, faible), ET la preuve qui justifie son choix.
+
+CE QUI SE PASSE EN COULISSES
+Avant d'appeler le robot IA, le programme cherche déjà, tout seul, des
+indices dans le texte (par exemple le mot "ESRS" ou "Annual Monitoring
+Report"). Ces indices sont donnés au robot comme "aide", mais c'est
+toujours le robot qui décide, jamais juste le mot-clé trouvé. Si le
+robot ne répond pas (panne réseau, etc.), le programme utilise ces
+indices tout seul pour deviner une réponse de secours, et il l'annonce
+clairement comme "moins fiable" plutôt que de faire semblant d'être sûr.
+L'analyste peut aussi choisir elle-même le type à la main si elle n'est
+pas d'accord avec la détection — mais ce réglage n'est plus visible
+dans la barre latérale (il a été retiré) : voir fiche A.11.
+
+EXEMPLE CONCRET
+Le document commence par "Third Monitoring Period — Compliance Advisor
+Ombudsman Review". Le robot répond : "Type 3, confiance haute, preuve :
+structuré en périodes de monitoring successives, produit par un tiers
+indépendant."
+
+FICHIERS CONCERNÉS
+scripts/grid_doctype.py (la détection elle-même),
+scripts/grid_display.py (l'affichage du résultat de détection).
+
+
+--------------------------------------------------------------------------
+A.4 — Extraction automatique des informations du projet
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Pour se repérer, l'analyste a besoin de savoir tout de suite : c'est
+quel projet ? dans quel pays ? quel secteur ? qui le porte ? Avant, il
+fallait lire tout le rapport pour trouver ça. Maintenant, le programme
+le trouve pour elle.
+
+COMMENT ÇA FONCTIONNE ?
+Dès que l'analyse démarre, le robot IA lit le début du document et
+essaie d'en sortir 5 informations : le nom du promoteur (sponsor), le
+pays, le secteur d'activité, le client (si différent du promoteur), et
+le type précis de projet.
+
+CE QUI SE PASSE EN COULISSES
+La consigne donnée au robot est stricte : "N'invente JAMAIS une valeur
+absente du texte." Si une information n'est pas explicitement écrite
+dans le document, le robot doit répondre "rien" pour cette case plutôt
+que de deviner. Si le robot est injoignable, toutes les cases restent
+vides — jamais une fausse valeur inventée pour "faire joli".
+
+EXEMPLE CONCRET
+Le document parle de "ContourGlobal Hydro Cascade" en Arménie. Le
+résultat affiche : "Sponsor : ContourGlobal Limited · Pays : Arménie ·
+Secteur : Large Hydro - Renewable Energy Infrastructure · Client :
+ContourGlobal Hydro Cascade CJSC."
+
+FICHIERS CONCERNÉS
+scripts/grid_metadata.py (l'extraction), scripts/grid_display.py et
+scripts/export.py (l'affichage à l'écran et dans le PDF/Excel).
+
+
+--------------------------------------------------------------------------
+A.5 — La Grille de 12 questions (le cœur du programme)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+C'est LE moteur du programme. Au lieu de faire un résumé vague ("il y a
+des risques"), l'assistant pose 12 questions très précises sur le
+document, une par une, et répond OUI ou NON à chacune, toujours avec une
+preuve.
+
+Les 12 questions sont réparties en 2 groupes :
+  - 6 questions "bloqueurs" (catégorie A) : des choses très graves comme
+    un blocage du chantier, une action en justice, un retrait de
+    bailleur de fonds, un accident structurel. Si la réponse est OUI,
+    ça enlève 25 points.
+  - 6 questions "structurantes" (catégorie B) : des choses importantes
+    mais moins immédiatement bloquantes, comme une perte de moyens de
+    subsistance sans compensation, un dépassement de pollution, une
+    absence de données de référence. Si la réponse est OUI, ça enlève
+    15 points.
+
+COMMENT ÇA FONCTIONNE ?
+Pour chaque question, le programme procède en 2 étapes, comme un
+médecin qui d'abord regarde s'il y a un symptôme, puis pose un
+diagnostic dessus :
+
+  ÉTAPE 1 — "Est-ce que le texte parle de ce sujet ?" Le robot IA lit
+  tous les morceaux de texte utiles et cherche un passage qui
+  correspond à la question. S'il n'en trouve aucun, on passe directement
+  à la règle du silence (voir fiche A.6) — le robot n'est même pas
+  interrogé une deuxième fois, pour ne pas gaspiller de temps.
+
+  ÉTAPE 2 — Si un passage a été trouvé, le robot le relit une seconde
+  fois, seul, et doit dire si c'est vraiment un OUI ou un NON, et si une
+  mesure de réparation existe (voir fiche A.7).
+
+Cette façon de faire "en 2 fois" remplace une ancienne version où tout
+était demandé au robot en une seule fois — ça marchait moins bien, car
+le robot se laissait influencer par trop de règles à la fois et finissait
+souvent par répondre NON par prudence, même quand ce n'était pas juste.
+
+CE QUI SE PASSE EN COULISSES
+Le robot doit toujours répondre dans un format très strict (du "JSON",
+un peu comme remplir une fiche avec des cases précises, pas un texte
+libre) : trouvé ou non, la citation exacte, le numéro de page, qui est
+concerné (le projet lui-même, ou plutôt la banque, ou quelqu'un
+d'ambigu), et une courte explication. Ce format strict évite que le
+robot "raconte sa vie" au lieu de répondre.
+
+Le programme fait aussi attention à ne jamais accuser le projet à tort :
+si le passage concerne plutôt la banque elle-même (par exemple une
+plainte contre le prêteur, pas contre le projet), la réponse est NON.
+
+EXEMPLE CONCRET
+Pour la question "Blocage physique du site ou grève active ?", le robot
+trouve la phrase : "Local workers staged a three-day strike in March
+2025 demanding higher wages." Il répond OUI, cite la phrase, indique la
+page 14, et note que le sujet concerné est bien le projet (pas la
+banque).
+
+FICHIERS CONCERNÉS
+scripts/grid_questions.py (la liste des 12 questions),
+scripts/grid_prompts.py (les instructions envoyées au robot),
+scripts/grid_analyze.py (le chef d'orchestre qui pose les questions),
+scripts/grid_sections.py (qui écarte certains passages non pertinents,
+voir fiche A.9).
+
+
+--------------------------------------------------------------------------
+A.6 — La règle du silence : que faire quand on ne trouve rien ?
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Si le rapport ne parle JAMAIS d'un sujet, qu'est-ce que ça veut dire ?
+Ça peut vouloir dire deux choses très différentes :
+  - "Il ne s'est rien passé" (silence rassurant).
+  - "On ne sait pas, personne n'a vérifié" (silence inquiétant).
+Confondre les deux serait dangereux : dire "tout va bien" juste parce
+que personne n'a rien écrit serait trompeur.
+
+COMMENT ÇA FONCTIONNE ?
+Chaque question porte une étiquette invisible :
+  - "événement" : c'est un fait daté (une grève, un accident...). Si
+    rien n'est écrit, le programme répond NON ("ça n'a probablement pas
+    eu lieu, sinon ça se saurait").
+  - "état" : c'est une information qui demande une vraie mesure ou un
+    vrai suivi (par exemple un seuil de pollution). Si rien n'est écrit,
+    le programme répond INCONNU ("on ne peut pas savoir sans mesure"),
+    JAMAIS NON — car ne pas mesurer ne prouve pas qu'il n'y a pas de
+    problème.
+
+Il existe une exception à cette règle, pour exactement 2 des 12
+questions (celles qui demandent "est-ce qu'il y a une absence de
+données de référence / de suivi ?") : pour elles, ne rien trouver DANS
+LE RAPPORT LUI-MÊME est la réponse à la question — un rapport sérieux
+mentionne toujours sa méthode de référence et son suivi périodique s'il
+en a un. Le silence total devient donc directement un OUI pénalisant.
+
+CE QUI SE PASSE EN COULISSES
+Cette décision (NON, INCONNU, ou OUI selon le cas) est calculée
+directement par le programme, sans jamais redemander au robot IA — ça
+évite que le robot invente une explication sur une absence de preuve.
+Un texte d'explication clair est toujours affiché pour dire que rien
+n'a été trouvé, et — pour les 2 questions spéciales — ce texte explique
+EN PLUS pourquoi ce silence précis compte comme un risque, pour que
+l'analyste comprenne d'où vient la pénalité même sans preuve écrite.
+
+EXEMPLE CONCRET
+Sur le dossier "Vorotan Refi", le rapport ne parle jamais de baseline
+socio-économique ni de suivi RSE périodique. Résultat : ces deux
+questions passent à OUI avec -15 points chacune, et le texte affiché
+dit : "Aucune mention trouvée dans le document. Pour ce critère,
+l'absence de donnée constitue en elle-même le risque évalué."
+
+FICHIERS CONCERNÉS
+scripts/grid_analyze.py (fonction _silence_status et
+_silence_fallback), scripts/grid_questions.py (l'étiquette
+"silence_type" sur chaque question).
+
+
+--------------------------------------------------------------------------
+A.7 — L'atténuation (la mitigation) : le problème a-t-il été réparé ?
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Trouver un risque, c'est une chose. Mais si la banque voit que le
+problème a été sérieusement réparé, ça compte en faveur du dossier.
+L'assistant vérifie donc, pour chaque risque trouvé, s'il existe une
+vraie preuve de réparation — pas juste une promesse en l'air.
+
+COMMENT ÇA FONCTIONNE ?
+Le robot passe la preuve de réparation à travers 2 "portes", l'une
+après l'autre :
+
+  PORTE 1 — Est-ce déjà fait, ou juste prévu ? Une phrase au passé
+  ("a été installé") passe. Une phrase au futur ou conditionnelle ("sera
+  installé", "prévu de faire") est refusée tout de suite : statut "NON
+  — intention".
+
+  PORTE 2 — Est-ce une vraie preuve solide ? Seules 3 formes de preuve
+  sont acceptées : un accord signé, un investissement matériel reçu, ou
+  une vérification faite par quelqu'un d'indépendant. Un simple plan, une
+  procédure ou une formation ne suffit pas : statut "NON — forme
+  insuffisante".
+
+Si les deux portes sont passées, il reste 2 possibilités :
+  - "OUI — prouvée" : la mesure existe et rien ne montre qu'elle a
+    échoué → un petit gain de points.
+  - "OUI — défaillante" : la mesure existe MAIS le texte montre qu'elle
+    n'a pas fonctionné → aucun gain, même si une mesure a bien été mise
+    en place.
+
+CE QUI SE PASSE EN COULISSES
+Le gain de points ne peut JAMAIS dépasser 20 points au total sur tout le
+dossier, même si beaucoup de risques ont été bien réparés — ça évite
+qu'un dossier avec plein de petits risques "tous corrigés" obtienne un
+score artificiellement parfait. Il y a aussi un garde-fou : le statut
+"défaillante" exige toujours 2 preuves écrites (la mesure ET l'échec) —
+sans les deux, le programme redescend automatiquement vers "prouvée"
+plutôt que d'accepter une accusation d'échec non démontrée.
+
+Un cas particulier important : un "plan d'action" en attente (ESAP) ne
+compte JAMAIS comme une réparation, même s'il est très détaillé — un
+plan pas encore réalisé n'est qu'une promesse.
+
+EXEMPLE CONCRET
+Un rapport dit : "Une compensation financière a été versée à toutes les
+familles affectées en janvier 2024, vérifiée par un auditeur
+indépendant." → Porte 1 passée (passé composé), Porte 2 passée
+(vérification indépendante) → statut "OUI — prouvée", gain de points.
+
+FICHIERS CONCERNÉS
+scripts/grid_prompts.py (les instructions des 2 portes),
+scripts/grid_scoring.py (fonction _resolve_gain et le garde-fou),
+scripts/grid_questions.py (les 4 statuts possibles).
+
+
+--------------------------------------------------------------------------
+A.8 — Le calcul de la note sur 100 (le score)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Résumer les 12 réponses en une seule note, facile à comparer d'un
+dossier à l'autre, sans jamais faire deviner ce calcul à une
+intelligence artificielle (pour que le calcul soit toujours exactement
+reproductible).
+
+COMMENT ÇA FONCTIONNE ?
+On part de 100 points. Pour chaque question répondue OUI (un risque
+trouvé), on enlève les points prévus (25 ou 15 selon la catégorie). Si
+une réparation solide existe, on regagne un petit bonus (5 ou 3 points),
+mais jamais plus de 20 points de bonus au total. La note ne descend
+jamais en dessous de 0.
+
+Ensuite, une couleur est attribuée :
+  - 75 à 100 : VERT
+  - 50 à 74  : JAUNE
+  - 25 à 49  : ORANGE
+  - 0 à 24   : ROUGE ("Éliminatoire")
+
+CE QUI SE PASSE EN COULISSES
+Ce calcul est fait par une simple formule mathématique en Python — il
+n'y a AUCUN appel au robot IA à cette étape précise. Le robot IA a déjà
+donné ses réponses avant ; ici, c'est juste de l'arithmétique, pour que
+deux personnes qui refont le même calcul obtiennent toujours exactement
+le même résultat.
+
+Il existe aussi un mécanisme spécial : si une question sur la pollution
+de l'air est répondue OUI (donc "on n'a pas suivi ce paramètre") et
+qu'une autre question sur les seuils de pollution est répondue NON, le
+programme change automatiquement la deuxième réponse en INCONNU — car
+sans mesure, on ne peut pas honnêtement dire "il n'y a pas de
+dépassement".
+
+EXEMPLE CONCRET
+Un dossier a 2 questions à OUI (-15 chacune, une avec une réparation
+prouvée qui rend +3), et 10 questions à NON ou INCONNU (0 point). Calcul :
+100 - 15 - 15 + 3 = 73/100 → couleur JAUNE.
+
+FICHIERS CONCERNÉS
+scripts/grid_scoring.py (toute la formule), scripts/grid_result.py
+(l'assemblage du résultat final).
+
+
+--------------------------------------------------------------------------
+A.9 — Ignorer certains passages "pièges" du document
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Certaines parties standard des rapports peuvent tromper le programme si
+elles ne sont pas traitées à part.
+
+COMMENT ÇA FONCTIONNE ?
+Deux zones du document sont repérées à part :
+  - La section "plan d'actions à faire" (ESAP) : elle liste des choses
+    PAS ENCORE faites. Elle sert quand même à repérer un risque (une
+    obligation non remplie est un vrai signal), mais elle n'est JAMAIS
+    acceptée comme preuve de réparation.
+  - La section "plaintes et mécanismes de recours" : c'est un texte
+    standard, copié-collé presque à l'identique dans tous les rapports
+    du même type — il est complètement écarté pour ne pas fausser
+    l'analyse avec du texte générique.
+
+CE QUI SE PASSE EN COULISSES
+Le programme repère le début de ces sections grâce à leur titre typique
+("Environmental & Social Action Plan", "Information on E&S Complaints
+and Grievance Mechanisms"), puis continue à suivre la section tant que
+le vocabulaire qui va avec continue d'apparaître, et s'arrête dès que ce
+vocabulaire disparaît.
+
+EXEMPLE CONCRET
+Un passage commence par "Item 4: Finalize the resettlement action plan
+by Q2 2025." → repéré comme faisant partie de l'ESAP → utile pour
+détecter un risque, mais impossible à utiliser comme preuve de
+réparation.
+
+FICHIERS CONCERNÉS
+scripts/grid_sections.py.
+
+
+--------------------------------------------------------------------------
+A.10 — Un seul document par analyse (et pourquoi)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Garantir que chaque preuve affichée peut vraiment être retrouvée dans
+le bon document, à la bonne page.
+
+COMMENT ÇA FONCTIONNE ?
+Le programme n'accepte qu'un seul fichier à la fois pour une analyse.
+Avant, on pouvait en donner plusieurs d'un coup, mais cette possibilité
+a été retirée.
+
+CE QUI SE PASSE EN COULISSES
+Avec plusieurs documents à la fois, les numéros de page recommençaient
+à 1 pour chaque fichier collé bout à bout, et rien ne permettait de
+savoir de quel fichier venait une preuve donnée. Plutôt que de garder
+une fonctionnalité qui donnait de fausses promesses de traçabilité,
+elle a été supprimée, et remplacée par la conservation des analyses
+(fiche A.12), qui règle le vrai problème (ne pas avoir à tout
+re-télécharger) sans casser la fiabilité des preuves.
+
+EXEMPLE CONCRET
+Avant : Elisa chargeait 3 PDF en même temps, et une preuve affichée
+"page 12" ne disait pas si c'était la page 12 du premier ou du
+deuxième fichier. Maintenant : un fichier = une analyse = zéro
+ambiguïté.
+
+FICHIERS CONCERNÉS
+app.py (le sélecteur de fichier, limité à un seul).
+
+
+--------------------------------------------------------------------------
+A.11 — Les contrôles manuels retirés de la barre latérale
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Avant, deux réglages étaient visibles sur le côté de l'écran : un menu
+pour forcer manuellement le type de document (au lieu de laisser la
+détection automatique décider), et une case pour dire "ce projet n'a
+aucun risque de pollution, ignore ces 2 questions".
+
+COMMENT ÇA FONCTIONNE ?
+Ces deux réglages ont été retirés de l'écran. La détection du type de
+document reste automatique uniquement (fiche A.3), et plus aucune
+question ne peut être désactivée manuellement pour un projet donné.
+
+CE QUI SE PASSE EN COULISSES
+Le code qui utilisait ces réglages (dans le "chef d'orchestre" de
+l'analyse) accepte toujours ces options en théorie, mais comme plus
+rien à l'écran ne les remplit, elles restent toujours vides — le
+comportement retombe donc toujours sur "automatique partout".
+
+EXEMPLE CONCRET
+Avant : Elisa pouvait cocher "Modules N/A → B.2" pour dire "ce barrage
+n'a pas de risque de pollution". Maintenant : cette case n'existe plus,
+les 2 questions de pollution sont toujours posées.
+
+FICHIERS CONCERNÉS
+app.py (bloc supprimé de la barre latérale).
+
+
+--------------------------------------------------------------------------
+A.12 — La synthèse écrite en langage humain
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Douze réponses OUI/NON, c'est précis, mais ce n'est pas facile à
+raconter en une phrase à un comité de crédit. Le programme demande donc
+au robot IA de rédiger un petit résumé, en français normal, sans les
+codes techniques.
+
+COMMENT ÇA FONCTIONNE ?
+Une fois que TOUTE l'analyse et TOUT le calcul du score sont terminés,
+le programme envoie au robot : le score final, le contexte du dossier,
+la liste des risques trouvés (OUI) et des points non documentés
+(INCONNU) — jamais les questions répondues NON (elles ne sont pas utiles
+pour raconter le risque), et jamais le texte brut du rapport en entier.
+Le robot rédige alors 3 à 5 phrases.
+
+CE QUI SE PASSE EN COULISSES
+Cette étape ne peut JAMAIS changer le score : elle arrive après que le
+calcul est terminé et figé. Si le robot ne répond pas, il n'y a
+simplement pas de synthèse affichée — le reste du résultat (le score,
+les 12 réponses, les preuves) reste disponible normalement.
+
+EXEMPLE CONCRET
+"Le dossier présente un score de 70/100 (Jaune) principalement dû à des
+lacunes documentées en matière de gouvernance, notamment l'absence de
+données de référence socio-économiques et de suivi périodique des
+indicateurs RSE. [...] Aucun risque bloquant majeur n'est identifié à
+ce stade."
+
+FICHIERS CONCERNÉS
+scripts/grid_prompts.py (fonction get_synthesis_prompt),
+scripts/grid_analyze.py (fonction _generate_synthesis).
+
+
+--------------------------------------------------------------------------
+A.13 — L'écran de résultat : le "Résumé exécutif"
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Éviter que l'analyste doive lire les 12 questions dans l'ordre
+technique pour comprendre l'essentiel. L'écran remonte tout de suite ce
+qui compte vraiment.
+
+COMMENT ÇA FONCTIONNE ?
+Après avoir vu le score et la synthèse, l'analyste voit 3 listes,
+construites automatiquement à partir des mêmes 12 réponses (rien n'est
+recalculé, juste trié différemment) :
+  1. "Principaux facteurs de risque" : les questions à OUI, classées de
+     la plus grave à la moins grave (et non plus dans l'ordre fixe de
+     la grille).
+  2. "Points nécessitant une vérification humaine" : les questions
+     INCONNU, plus les OUI où le robot avait un doute réel (pas juste un
+     silence).
+  3. "Points favorables" : les NON confirmés par une vraie preuve
+     écrite, et les risques dont la réparation a été prouvée.
+
+CE QUI SE PASSE EN COULISSES
+Ce sont juste des tris et des filtres sur les données déjà calculées —
+aucune nouvelle question n'est posée au robot IA à cette étape. Les
+questions "non applicables" (N/A) n'apparaissent dans aucune des 3
+listes : ce n'est ni un problème, ni un point positif, donc ça ne
+mérite pas d'être mis en avant ici (on peut toujours les voir dans la
+grille détaillée, fiche A.14).
+
+EXEMPLE CONCRET
+Un dossier a 2 questions à OUI (-25 et -15 points). Elles apparaissent
+dans "Principaux facteurs de risque", la plus grave (-25) en premier.
+
+FICHIERS CONCERNÉS
+scripts/grid_display.py (fonctions _top_risk_drivers,
+_needs_verification, _favorable_points, _render_executive_summary).
+
+
+--------------------------------------------------------------------------
+A.14 — La grille détaillée (les 12 questions, en détail)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Pour l'analyste qui veut vérifier le détail d'un point précis, ou
+regarder les questions qui ne sont pas dans le résumé (les NON simples,
+les N/A).
+
+COMMENT ÇA FONCTIONNE ?
+Chaque question s'affiche avec une pastille de couleur (rouge = OUI,
+vert = NON, jaune = INCONNU, gris = N/A). On peut cliquer pour déplier
+et voir : la preuve exacte du risque (avec le numéro de page), la
+preuve de réparation si elle existe, le doute éventuel du robot, et les
+petites informations complémentaires ("qui est vraiment concerné ?",
+par exemple).
+
+CE QUI SE PASSE EN COULISSES
+Seules les questions "NON simple, sans aucune preuve écrite" restent
+repliées automatiquement (rien à montrer). Toutes les autres — y
+compris les N/A, qui doivent toujours porter une justification écrite —
+peuvent toujours être dépliées.
+
+EXEMPLE CONCRET
+L'analyste clique sur "🔴 Gouvernance B.3.1 — OUI" et voit : "Aucune
+mention trouvée dans le document. Pour ce critère, l'absence de donnée
+constitue en elle-même le risque évalué."
+
+FICHIERS CONCERNÉS
+scripts/grid_display.py (fonction _render_grid).
+
+
+--------------------------------------------------------------------------
+A.15 — Export PDF du résultat
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Permettre à l'analyste d'imprimer ou de joindre le résultat à un
+mémo de comité de crédit, sans avoir à copier-coller manuellement
+l'écran.
+
+COMMENT ÇA FONCTIONNE ?
+Un bouton "Télécharger le PDF" génère un document propre avec : le nom
+du projet, les informations extraites, le contexte du dossier, un
+bandeau de couleur avec le score, la synthèse, la liste des signaux
+identifiés, un tableau des 12 questions, et le détail complet de chaque
+question à risque, sur plusieurs pages si nécessaire.
+
+CE QUI SE PASSE EN COULISSES
+Le PDF est construit directement en Python (avec une bibliothèque
+appelée fpdf2), sans passer par un logiciel externe. Le document met
+toujours en avant le nom du sujet ("Gouvernance") avant le code
+technique ("B.3.1") — jamais l'inverse — pour rester lisible sans
+connaître les codes de la grille par cœur.
+
+EXEMPLE CONCRET
+Le fichier téléchargé s'appelle "esg_analysis_48790_-_Vorotan_Refi.pdf"
+et contient 3 pages : une page de résumé avec le score en gros, un
+tableau des 12 questions, et le détail de chaque question à risque.
+
+FICHIERS CONCERNÉS
+scripts/export.py (fonction build_grid_v4_pdf).
+
+
+--------------------------------------------------------------------------
+A.16 — Export Excel du résultat
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Donner une version que l'analyste peut trier, filtrer, ou coller dans
+un autre tableau, contrairement au PDF qui est juste pour la lecture.
+
+COMMENT ÇA FONCTIONNE ?
+Un bouton "Télécharger l'Excel" génère un classeur à 3 feuilles :
+"Synthese" (le résumé général), "Grille" (les 12 questions en tableau,
+avec des couleurs de fond selon le statut), et "Detail" (les citations
+complètes du rapport, jamais coupées, pour pouvoir les copier-coller
+telles quelles).
+
+CE QUI SE PASSE EN COULISSES
+Contrairement au PDF (où les longues citations sont raccourcies pour
+tenir sur la page), la feuille "Detail" de l'Excel garde toujours le
+texte complet, avec un habillage automatique du texte dans la cellule.
+
+EXEMPLE CONCRET
+Dans la feuille "Grille", la ligne "B.3.1" apparaît avec un fond rouge
+clair parce que son statut est "OUI".
+
+FICHIERS CONCERNÉS
+scripts/export.py (fonction build_grid_v4_excel).
+
+
+--------------------------------------------------------------------------
+A.17 — La conservation des analyses (ne pas re-télécharger un document)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Avant, si l'analyste fermait son navigateur, elle perdait tout : il
+fallait re-télécharger le même PDF et refaire toute l'analyse (donc
+réappeler le robot IA) pour revoir un résultat déjà obtenu.
+
+COMMENT ÇA FONCTIONNE ?
+Chaque analyse terminée est automatiquement enregistrée dans un fichier
+sur le disque (pas juste dans la mémoire de l'écran). Dans l'onglet
+"Portfolio Dashboard", l'analyste voit la liste de toutes ses analyses
+passées, et peut recharger n'importe laquelle d'un clic pour la revoir
+exactement comme au premier jour.
+
+CE QUI SE PASSE EN COULISSES
+Chaque analyse est écrite dans un fichier au format JSON (un format de
+texte structuré, facile à relire), nommé avec la date et l'heure pour
+qu'ils se classent tout seuls du plus récent au plus ancien. Si
+l'écriture du fichier échoue pour une raison technique, l'analyse
+elle-même n'est pas perdue à l'écran, mais un message prévient
+l'analyste qu'elle ne sera pas disponible après la fermeture du
+navigateur.
+
+EXEMPLE CONCRET
+Elisa analyse un dossier lundi. Mercredi, sans re-télécharger le PDF,
+elle va dans "Portfolio Dashboard", choisit "Vorotan Refi — 70/100
+JAUNE — 21/08/2026 01:44" dans la liste, clique sur "📂 Charger cette
+analyse", et revoit exactement le même résultat qu'avant.
+
+FICHIERS CONCERNÉS
+scripts/analysis_store.py (sauvegarde et lecture des fichiers), app.py
+(page "Portfolio Dashboard").
+
+
+--------------------------------------------------------------------------
+A.18 — Le tableau de bord du portefeuille (Portfolio Dashboard)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Voir d'un coup d'œil toutes les analyses déjà faites, pour repérer vite
+les dossiers les plus risqués.
+
+COMMENT ÇA FONCTIONNE ?
+Un tableau liste toutes les analyses sauvegardées : le document, le
+score, la couleur, le type de document, le nombre de questions actives.
+Un filtre permet de ne garder que certaines couleurs (par exemple, ne
+montrer que les dossiers ROUGE et ORANGE). En dessous, 4 compteurs
+résument le nombre total d'analyses par couleur.
+
+CE QUI SE PASSE EN COULISSES
+Ce tableau se construit en relisant tous les fichiers sauvegardés
+(fiche A.17) à chaque fois que la page s'ouvre — pas besoin de base de
+données séparée pour ça, vu le nombre raisonnable de dossiers analysés
+par une petite équipe.
+
+EXEMPLE CONCRET
+Elisa filtre sur "ROUGE" et "ORANGE" seulement, et voit d'un coup les 3
+dossiers les plus préoccupants de son portefeuille.
+
+FICHIERS CONCERNÉS
+app.py (page "Portfolio Dashboard", branche V4).
+
+
+################################################################################
+PARTIE B — L'ANCIEN SYSTÈME (toujours présent, plus utilisé par défaut)
+################################################################################
+
+Ce système existait AVANT la Grille V4. Il reste entièrement dans le
+code (rien n'a été supprimé), et peut être réactivé exprès pour
+comparer les deux méthodes, mais ce n'est plus ce que voit l'analyste
+au quotidien.
+
+
+--------------------------------------------------------------------------
+B.1 — La recherche par ressemblance (FAISS / embeddings)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Au lieu de poser des questions précises, l'ancien système compare le
+nouveau document à tous les anciens rapports déjà connus, pour voir à
+quel point ils se ressemblent sur 3 sujets : les problèmes avec les
+communautés, la pollution, et le non-respect des règles.
+
+COMMENT ÇA FONCTIONNE ?
+Chaque petit morceau de texte (du nouveau document ET des anciens
+rapports) est transformé en une longue suite de nombres (un
+"embedding") par un programme spécialisé. Deux morceaux de texte qui
+parlent de la même chose ont des suites de nombres "proches" — un peu
+comme deux adresses GPS proches sur une carte, même si les mots utilisés
+sont différents.
+
+CE QUI SE PASSE EN COULISSES
+Une bibliothèque appelée FAISS range tous les "embeddings" des anciens
+rapports dans un grand classeur, organisé pour qu'on puisse retrouver
+très vite les voisins les plus proches d'un nouveau morceau de texte.
+Le score final de chaque catégorie ("flag") est le score du voisin le
+plus ressemblant trouvé.
+
+EXEMPLE CONCRET
+Un chunk du nouveau document parle de "grievance mechanism declared
+non-independent" — le système trouve un passage très ressemblant dans
+un ancien rapport connu pour avoir eu de vrais conflits communautaires,
+et fait monter le score "Community & Stakeholder Risk".
+
+FICHIERS CONCERNÉS
+scripts/search.py, scripts/pipeline.py (la préparation à l'avance des
+embeddings de tout le corpus).
+
+
+--------------------------------------------------------------------------
+B.2 — Le filtre "est-ce vraiment un problème ?" (confirm_risk)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Le problème de la recherche par ressemblance (fiche B.1), c'est qu'elle
+compare des SUJETS, pas des BONNES ou MAUVAISES nouvelles. Une phrase
+"le plan d'action a été terminé en avance" et une phrase "le plan
+d'action a pris du retard" parlent du même sujet, et se ressembleraient
+donc énormément pour le système — sans ce filtre, une bonne nouvelle
+pourrait faire monter le score de risque par erreur.
+
+COMMENT ÇA FONCTIONNE ?
+Quand un mot-clé de risque est repéré dans un passage, le programme
+demande au robot IA : "Ce passage décrit-il un vrai problème, ou une
+situation résolue/positive sur ce même sujet ?" Le robot répond juste
+"RISK" ou "CLEAN".
+
+CE QUI SE PASSE EN COULISSES
+Pour ne pas ralentir l'analyse en interrogeant le robot des centaines
+de fois, ce filtre n'est appelé que sur au maximum 30 passages par
+document, en priorisant les plus susceptibles de peser sur le score
+final. Chaque réponse est aussi mise en mémoire (cache) pour ne jamais
+reposer deux fois exactement la même question.
+
+EXEMPLE CONCRET
+"ESAP actions completed ahead of schedule" → le robot répond "CLEAN" →
+ce passage n'est plus compté comme un risque, même s'il ressemblait
+beaucoup à un passage à risque.
+
+FICHIERS CONCERNÉS
+scripts/llm_confirm.py (fonction confirm_risk).
+
+
+--------------------------------------------------------------------------
+B.3 — La note et le grade (A/B/C/D)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Résumer les 3 scores de catégorie (communauté, pollution, conformité)
+en une seule lettre facile à comprendre.
+
+COMMENT ÇA FONCTIONNE ?
+Le programme prend le PLUS HAUT des 3 scores, et regarde dans quelle
+tranche il tombe : en dessous de 15 = "Vigilance" (D), entre 15 et 35 =
+"Attention" (C), entre 35 et 60 = "Alerte" (B), au-dessus de 60 =
+"Escalade" (A).
+
+CE QUI SE PASSE EN COULISSES
+Il existait avant une méthode plus compliquée (un modèle statistique
+appelé "Cox", qui essayait de prédire une probabilité qu'un problème
+arrive dans les 12 mois). Cette méthode a été abandonnée — elle
+utilisait trop peu de dossiers pour être fiable — et remplacée par
+cette règle simple, plus transparente. Le code de l'ancienne méthode
+est toujours dans le fichier, marqué clairement "CODE MORT", pour ne
+pas être perdu si jamais on veut y revenir plus tard.
+
+EXEMPLE CONCRET
+Score communauté = 72, score pollution = 30, score conformité = 50 →
+le plus haut est 72 → Grade A ("Escalade").
+
+FICHIERS CONCERNÉS
+scripts/model.py (fonction compute_grade).
+
+
+--------------------------------------------------------------------------
+B.4 — Détection de signaux par mots-clés + document annoté
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Montrer visuellement, directement dans le texte du document, où se
+trouvent les passages qui ont fait monter le score.
+
+COMMENT ÇA FONCTIONNE ?
+Une longue liste de mots-clés (par exemple "opposition", "pollut",
+"biodiversity") est recherchée directement dans le texte du document.
+Chaque famille de mots-clés retrouvée est ensuite vérifiée par le
+filtre "RISK/CLEAN" (fiche B.2) avant d'être comptée. Le texte du
+document peut ensuite être affiché avec les passages à risque
+surlignés en couleur (rouge, orange ou bleu-vert selon la gravité).
+
+CE QUI SE PASSE EN COULISSES
+Pour chaque famille de signal, seule la première occurrence dans le
+document est vérifiée par le robot IA (pas chaque répétition) — un
+compromis pour rester rapide sur un document de 70 pages.
+
+EXEMPLE CONCRET
+Le mot "grievance" apparaît 6 fois dans le document → signal
+"community opposition" détecté, confiance élevée, passages surlignés en
+rouge à l'écran.
+
+FICHIERS CONCERNÉS
+scripts/signals.py (la liste des mots-clés), app.py (fonctions
+_find_signals_in_document et _build_annotated_html).
+
+
+--------------------------------------------------------------------------
+B.5 — L'analyse en 3 passes par intelligence artificielle
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Aller plus loin que juste "il y a un mot-clé" : chercher de vrais
+incidents, des promesses sans chiffres précis, des tournures de phrase
+floues, et les sujets ESG importants dont le rapport ne parle pas du
+tout.
+
+COMMENT ÇA FONCTIONNE ?
+Trois étapes, l'une après l'autre :
+  PASSE 1 — pour chaque petit morceau de texte, le robot répond à 3
+  questions : y a-t-il un engagement chiffré ? un incident ? une
+  formulation vague ?
+  PASSE 2 — le robot compare les grands thèmes couverts par le document
+  à une liste de 6 sujets ESG critiques (communautés, pollution,
+  biodiversité, sécurité au travail, consultation, plaintes), et dit
+  lesquels sont absents.
+  PASSE 3 — le robot rédige une alerte de 3 à 5 phrases en combinant
+  tout ce qui a été trouvé dans les passes 1 et 2, plus le grade final.
+
+CE QUI SE PASSE EN COULISSES
+Chaque passe peut échouer sans faire planter les autres (si le robot ne
+répond pas à temps, cette passe est juste vide, le reste continue).
+Cette fonctionnalité utilise un robot plus petit et moins puissant
+qu'aujourd'hui (au départ prévu pour un robot local de taille modeste)
+— le format de réponse demandé est donc volontairement simple (des
+lignes de texte, pas un format compliqué), pour rester fiable même avec
+un robot moins capable.
+
+EXEMPLE CONCRET
+Passe 2 répond : "AUCUNE OMISSION" pour un rapport qui couvre bien les 6
+sujets critiques ; ou liste "Biodiversité et habitats naturels" comme
+sujet manquant si le rapport n'en parle jamais.
+
+FICHIERS CONCERNÉS
+scripts/deep_analysis.py (les 3 passes), scripts/analyze.py (qui les
+appelle).
+
+
+--------------------------------------------------------------------------
+B.6 — La recommandation automatique
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Donner une phrase d'action concrète plutôt qu'un score tout seul, par
+exemple "Escalade immédiate au credit committee".
+
+COMMENT ÇA FONCTIONNE ?
+Le robot IA écrit une phrase basée sur le grade final ET sur les vrais
+signaux détectés dans CE document précis (pas une phrase toute faite,
+toujours la même pour un grade donné).
+
+CE QUI SE PASSE EN COULISSES
+Si le robot ne répond pas, le programme retombe sur une phrase toute
+faite selon le grade (par exemple "Grade A → Escalade immédiate"), pour
+ne jamais laisser cette case vide.
+
+EXEMPLE CONCRET
+"Escalate given confirmed community opposition and unresolved grievance
+mechanism concerns; recommend enhanced due diligence before disbursement."
+
+FICHIERS CONCERNÉS
+scripts/llm_confirm.py (fonction generate_recommendation).
+
+
+--------------------------------------------------------------------------
+B.7 — Le radar ESG (graphique en toile d'araignée)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Visualiser en un coup d'œil 5 dimensions du document sur un seul
+graphique, plutôt que de lire 5 chiffres séparés.
+
+COMMENT ÇA FONCTIONNE ?
+Un graphique à 5 branches affiche : le risque communauté, le risque
+pollution, le risque conformité, la "spécificité" du rapport (voir fiche
+B.8), et la couverture des sujets ESG (l'inverse du nombre d'omissions
+trouvées en passe 2).
+
+CE QUI SE PASSE EN COULISSES
+Si une des 5 valeurs ne peut pas être calculée (par exemple, le texte
+est trop court pour calculer une vraie spécificité), le programme met
+50 (une valeur neutre, "ni bon ni mauvais") plutôt que 0 — mettre 0
+donnerait l'impression fausse que ce point est "le pire possible".
+
+FICHIERS CONCERNÉS
+app.py (fonction _build_radar_chart).
+
+
+--------------------------------------------------------------------------
+B.8 — Le score de "spécificité" du document (repérer le flou)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Un rapport rempli de formulations vagues ("des efforts raisonnables
+seront faits", "dans la mesure du possible") est en lui-même un signal
+d'alerte — ça peut cacher un manque de rigueur, ou du "greenwashing"
+(se donner l'air responsable sans vraiment s'engager).
+
+COMMENT ÇA FONCTIONNE ?
+Le programme calcule, pour chaque morceau de texte, un score entre 0 et
+1 : plus il y a de chiffres précis, de dates, de noms propres, plus le
+score monte ; plus il y a de mots flous ("pourrait", "dans la mesure du
+possible", "sera envisagé"), plus le score baisse.
+
+CE QUI SE PASSE EN COULISSES
+Ce calcul se fait avec de simples règles de reconnaissance de motifs
+dans le texte (pas d'intelligence artificielle) — rapide, gratuit, et
+toujours reproductible à l'identique.
+
+EXEMPLE CONCRET
+"200 liters of oil were spilled on 14 March 2025" → score élevé (chiffre
+précis + date précise). "Reasonable efforts will be made where
+feasible" → score très bas (deux formulations floues dans la même
+phrase).
+
+FICHIERS CONCERNÉS
+scripts/chunk_metadata.py (fonction compute_specificity_score).
+
+
+--------------------------------------------------------------------------
+B.9 — La bibliothèque de motifs (Pattern Library)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Montrer, sur l'ensemble de l'historique de la banque, quels signaux
+apparaissent le plus souvent avant un vrai problème, et combien de
+temps s'écoule en moyenne avant que ce problème n'arrive.
+
+COMMENT ÇA FONCTIONNE ?
+Un onglet à part liste chaque famille de signal (par exemple "ESAP
+delays"), avec le nombre de projets concernés, le nombre d'occurrences,
+et le temps moyen avant l'événement, calculé uniquement sur les projets
+du corpus qui ont vraiment connu un événement ESG.
+
+CE QUI SE PASSE EN COULISSES
+Ce calcul relit tout le tableau des anciens rapports (plus de 4000
+morceaux de texte) — pour ne pas ralentir l'écran, le résultat est
+gardé en mémoire (mis en cache) après le premier calcul.
+
+FICHIERS CONCERNÉS
+app.py (fonction _compute_pattern_library, page "Pattern Library").
+
+
+--------------------------------------------------------------------------
+B.10 — Réglage des seuils de risque (Settings)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Permettre d'ajuster, sans toucher au code, à partir de quel score on
+passe de "Vigilance" à "Attention", puis à "Alerte", puis à
+"Escalade" (fiche B.3).
+
+COMMENT ÇA FONCTIONNE ?
+Trois curseurs à glisser dans l'onglet "Settings". Le tableau des
+tranches se met à jour immédiatement en dessous pour montrer l'effet du
+réglage.
+
+CE QUI SE PASSE EN COULISSES
+Ce réglage n'affecte QUE l'ancien système (fiche B.3) — il n'a aucun
+effet sur la Grille V4 (partie A), dont le calcul du score suit une
+formule fixe, non réglable depuis l'écran.
+
+FICHIERS CONCERNÉS
+app.py (page "Settings").
+
+
+################################################################################
+PARTIE C — LES OUTILS DE COULISSES (préparation des données, pas vus au
+quotidien par l'analyste)
+################################################################################
+
+--------------------------------------------------------------------------
+C.1 — Lire et découper les anciens rapports (ingest.py)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Transformer un dossier plein de vieux PDF en petits morceaux de texte
+utilisables par le reste du programme.
+
+COMMENT ÇA FONCTIONNE ?
+Pour chaque PDF du dossier "corpus", le programme sort le texte page
+par page. Si une page est presque vide de texte (souvent un PDF
+scanné, une simple photo de la page), il utilise la reconnaissance de
+caractères (l'OCR, qui "lit" une image comme si c'était une photo de
+texte) pour quand même en sortir quelque chose.
+
+CE QUI SE PASSE EN COULISSES
+Chaque morceau de texte reçoit aussi automatiquement une date, une
+catégorie (environnement / social / gouvernance), un type
+(chiffre-clé / engagement / incident / récit), et un score de
+spécificité (fiche B.8) — tout ça calculé une bonne fois pour toutes,
+pour ne pas avoir à le refaire à chaque recherche.
+
+FICHIERS CONCERNÉS
+scripts/ingest.py, scripts/chunk_metadata.py.
+
+
+--------------------------------------------------------------------------
+C.2 — Reconstruire le classeur de comparaison (pipeline.py)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Après avoir ajouté de nouveaux rapports au corpus, il faut refaire le
+"classeur" utilisé par la recherche par ressemblance (fiche B.1).
+
+COMMENT ÇA FONCTIONNE ?
+Le programme relit tout le tableau de morceaux de texte, calcule leur
+suite de nombres (embedding), puis reconstruit l'index FAISS à partir
+de zéro.
+
+FICHIERS CONCERNÉS
+scripts/pipeline.py.
+
+
+--------------------------------------------------------------------------
+C.3 — Étiqueter les anciens rapports (annote.py)
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Dire, pour chaque ancien projet, s'il a fini par avoir un vrai problème
+ESG ou non, et à quelle catégorie ce problème appartient — ce sont ces
+étiquettes qui permettent à la recherche par ressemblance (fiche B.1)
+de comparer un nouveau document à des cas connus.
+
+COMMENT ÇA FONCTIONNE ?
+Le programme lit un tableau Excel préparé à la main (qui liste les
+projets et leurs vrais problèmes connus), puis vérifie, morceau de
+texte par morceau de texte, si le contenu réel correspond bien à
+l'étiquette du projet — plutôt que de coller la même étiquette sur
+tous les morceaux d'un projet sans vérifier.
+
+FICHIERS CONCERNÉS
+scripts/annote.py.
+
+
+--------------------------------------------------------------------------
+C.4 — Le déploiement protégé par mot de passe
+--------------------------------------------------------------------------
+
+À QUOI ÇA SERT ?
+Empêcher que n'importe qui sur Internet puisse ouvrir l'outil.
+
+COMMENT ÇA FONCTIONNE ?
+Un "gardien" (Caddy) se place devant l'application et demande un nom
+d'utilisateur et un mot de passe avant de laisser entrer qui que ce
+soit. Ce gardien redirige ensuite la demande vers l'application
+elle-même, qui n'est jamais accessible directement de l'extérieur.
+
+FICHIERS CONCERNÉS
+Caddyfile, docker-compose.yml.
+
+
+
+================================================================================
+4. MÉTHODOLOGIE COMPLÈTE DU DÉVELOPPEMENT
+================================================================================
+
+Je raconte ici la construction du projet comme la construction d'une
+maison, étape par étape, en me basant sur ce que le code et ses
+commentaires racontent de son histoire.
+
+--------------------------------------------------------------------------
+ÉTAPE 1 — PRÉPARATION (le terrain et les matériaux)
+--------------------------------------------------------------------------
+OBJECTIF : rassembler les rapports ESG déjà existants, pour avoir une
+matière première à comparer.
+CE QUI A ÉTÉ FAIT : un dossier "corpus" avec des dizaines de rapports
+PDF/texte réels (IFC, CAO), plus un tableau Excel qui dit lesquels ont
+eu un vrai incident ESG.
+POURQUOI C'ÉTAIT NÉCESSAIRE : sans exemples passés, impossible de
+construire un système de comparaison par ressemblance.
+EXEMPLE SIMPLE : comme rassembler tous les vieux carnets de notes d'une
+classe avant de pouvoir dire "cet élève ressemble à celui de l'an
+dernier qui avait eu des difficultés".
+
+--------------------------------------------------------------------------
+ÉTAPE 2 — ARCHITECTURE (les fondations)
+--------------------------------------------------------------------------
+OBJECTIF : décider comment le programme serait organisé : un fichier
+qui découpe le texte, un fichier qui compare, un fichier qui calcule le
+score, un fichier qui affiche.
+CE QUI A ÉTÉ FAIT : le dossier "scripts/" a été découpé en petits
+fichiers, chacun avec un rôle précis (config.py pour les réglages,
+search.py pour la comparaison, etc.), plutôt qu'un seul énorme fichier.
+POURQUOI C'ÉTAIT NÉCESSAIRE : pour pouvoir changer une pièce du puzzle
+(par exemple, comment on calcule le score) sans devoir toucher à tout
+le reste.
+EXEMPLE SIMPLE : comme construire une maison avec une pièce cuisine,
+une pièce salon, une pièce chambre — plutôt qu'une seule immense pièce
+où tout serait mélangé.
+
+--------------------------------------------------------------------------
+ÉTAPE 3 — CRÉATION DES ÉCRANS
+--------------------------------------------------------------------------
+OBJECTIF : donner à l'analyste un endroit où déposer un document et
+voir le résultat.
+CE QUI A ÉTÉ FAIT : un fichier app.py qui utilise l'outil "Streamlit"
+pour dessiner l'écran directement à partir de code Python (pas besoin
+de savoir dessiner des sites web pour ça). Un menu sur le côté permet
+de changer de page (Analyse, Tableau de bord, Bibliothèque de motifs,
+Réglages).
+POURQUOI C'ÉTAIT NÉCESSAIRE : sans écran, seul quelqu'un qui sait
+programmer pourrait utiliser l'outil.
+EXEMPLE SIMPLE : comme installer des boutons et un écran sur une
+machine à laver, plutôt que de devoir bricoler les fils électriques à
+chaque fois qu'on veut laver du linge.
+
+--------------------------------------------------------------------------
+ÉTAPE 4 — CRÉATION DES "ROUTES" (le chemin que prend une demande)
+--------------------------------------------------------------------------
+OBJECTIF : s'assurer qu'une seule méthode d'analyse tourne à la fois
+pour un document donné, jamais deux en même temps par accident.
+CE QUI A ÉTÉ FAIT : un fichier pipeline_dispatch.py a été créé
+spécialement pour être le SEUL endroit qui décide "j'utilise la Grille
+V4" ou "j'utilise l'ancien système" — jamais les deux pour la même
+analyse.
+POURQUOI C'ÉTAIT NÉCESSAIRE : avant, l'écran appelait les deux systèmes
+l'un après l'autre pour le même document, ce qui doublait le temps
+d'attente et le nombre d'appels au robot IA, sans vraie raison.
+EXEMPLE SIMPLE : comme avoir un seul aiguillage sur une voie de train,
+plutôt que de laisser chaque wagon décider tout seul quelle direction
+prendre.
+
+--------------------------------------------------------------------------
+ÉTAPE 5 — GESTION DES DONNÉES (comment on range les informations)
+--------------------------------------------------------------------------
+OBJECTIF : garder une trace de chaque analyse, sans avoir besoin d'une
+vraie base de données compliquée.
+CE QUI A ÉTÉ FAIT : chaque analyse terminée est écrite dans un fichier
+JSON séparé, dans un dossier data/analyses/, qu'on peut relire plus
+tard.
+POURQUOI C'ÉTAIT NÉCESSAIRE : pour que l'analyste puisse revenir sur un
+résultat plus tard, sans tout refaire.
+EXEMPLE SIMPLE : comme ranger chaque devoir corrigé dans une pochette
+plastique numérotée, plutôt que d'avoir besoin d'une armoire high-tech
+pour retrouver une copie.
+
+--------------------------------------------------------------------------
+ÉTAPE 6 — AUTHENTIFICATION (le mot de passe à l'entrée)
+--------------------------------------------------------------------------
+OBJECTIF : que seules les personnes autorisées de la banque puissent
+utiliser l'outil.
+CE QUI A ÉTÉ FAIT : un gardien (Caddy) a été installé devant
+l'application, avec un nom d'utilisateur et un mot de passe pour
+chaque personne autorisée.
+POURQUOI C'ÉTAIT NÉCESSAIRE : sans ça, n'importe qui trouvant l'adresse
+du site pourrait y entrer et voir des informations de dossiers de
+crédit.
+EXEMPLE SIMPLE : comme mettre un digicode sur la porte d'un immeuble de
+bureaux.
+
+--------------------------------------------------------------------------
+ÉTAPE 7 — SÉCURITÉ (protéger le contenu confidentiel)
+--------------------------------------------------------------------------
+OBJECTIF : ne jamais faire fuiter les vrais documents confidentiels des
+clients de la banque.
+CE QUI A ÉTÉ FAIT : les dossiers contenant des vrais rapports (corpus,
+models, data) sont exclus du système de sauvegarde du code
+(git) — le code du programme peut être partagé, mais jamais les
+documents eux-mêmes.
+POURQUOI C'ÉTAIT NÉCESSAIRE : le code du programme n'a rien de secret,
+mais le contenu des rapports de projets réels, si.
+EXEMPLE SIMPLE : comme partager la recette de cuisine sans jamais
+partager la liste des clients qui l'ont commandée.
+
+--------------------------------------------------------------------------
+ÉTAPE 8 — VALIDATION (vérifier que le résultat a du sens)
+--------------------------------------------------------------------------
+OBJECTIF : s'assurer qu'un résultat mal formé (par exemple une question
+répondue "OUI" mais sans aucune preuve écrite) ne peut jamais être
+affiché sans être détecté.
+CE QUI A ÉTÉ FAIT : une fonction spéciale (validate_grid_result) relit
+chaque résultat après son calcul et vérifie des dizaines de règles de
+cohérence (les totaux correspondent-ils bien à la somme du détail ? un
+"N/A" a-t-il bien sa justification écrite ? etc.).
+POURQUOI C'ÉTAIT NÉCESSAIRE : pour repérer une erreur de calcul tout de
+suite, plutôt que de laisser un mauvais chiffre arriver jusqu'à
+l'analyste sans que personne ne s'en rende compte.
+EXEMPLE SIMPLE : comme un professeur qui recompte toujours les points
+d'une copie avant de rendre la note finale, pour être sûr de ne pas
+s'être trompé en additionnant.
+
+--------------------------------------------------------------------------
+ÉTAPE 9 — TESTS (vérifier que rien n'est cassé)
+--------------------------------------------------------------------------
+OBJECTIF : pouvoir changer une partie du programme sans casser le
+reste sans s'en rendre compte.
+CE QUI A ÉTÉ FAIT : un très gros fichier de tests (scripts/test.py, avec
+des centaines de petites vérifications automatiques) qui se lance avec
+une seule commande et vérifie tout d'un coup : le calcul du score, la
+détection du type de document, les exports PDF/Excel, etc.
+POURQUOI C'ÉTAIT NÉCESSAIRE : avec un programme de cette taille, il est
+impossible de tout revérifier à la main à chaque petit changement.
+EXEMPLE SIMPLE : comme une liste de contrôle avant de faire décoller un
+avion — on ne redémontre pas l'avion à chaque vol, mais on repasse
+toujours la même liste de vérifications rapides.
+
+--------------------------------------------------------------------------
+ÉTAPE 10 — DÉPLOIEMENT (installer la maison pour de vrai)
+--------------------------------------------------------------------------
+OBJECTIF : faire tourner le programme sur un vrai serveur, accessible
+par l'équipe, pas juste sur l'ordinateur du développeur.
+CE QUI A ÉTÉ FAIT : trois "boîtes" Docker séparées (l'application, le
+robot IA local, le gardien à l'entrée) qui démarrent ensemble avec une
+seule commande, chacune avec son propre rôle.
+POURQUOI C'ÉTAIT NÉCESSAIRE : pour que le programme fonctionne pareil
+partout, sans dépendre de ce qui est déjà installé sur l'ordinateur qui
+l'héberge.
+EXEMPLE SIMPLE : comme livrer une maison préfabriquée en plusieurs
+modules déjà équipés, plutôt que de tout construire pièce par pièce sur
+place.
+
+
+
+================================================================================
+5. LES ÉTAPES DE MON ANALYSE (comment j'ai étudié ce projet)
+================================================================================
+
+ÉTAPE 1 — J'ai regardé la structure des dossiers.
+CE QUE J'AI OBSERVÉ : un fichier app.py à la racine, un dossier
+"scripts/" avec une trentaine de petits fichiers Python, un fichier
+CLAUDE.md qui explique le contexte du projet et les règles à respecter,
+des fichiers Docker pour le déploiement.
+CE QUE J'EN AI DÉDUIT : c'est une seule application Python/Streamlit,
+pas un projet séparé "site web" + "serveur". La logique métier est
+volontairement découpée en petits fichiers indépendants.
+FICHIERS IMPORTANTS : app.py, scripts/, CLAUDE.md.
+
+ÉTAPE 2 — J'ai trouvé le point d'entrée.
+CE QUE J'AI OBSERVÉ : app.py est le fichier que l'on lance
+(`streamlit run app.py`), confirmé aussi par le Dockerfile qui se
+termine par cette même commande.
+CE QUE J'EN AI DÉDUIT : tout ce que voit l'analyste part de ce fichier.
+FICHIERS IMPORTANTS : app.py, Dockerfile.
+
+ÉTAPE 3 — J'ai suivi le chemin d'une analyse, du clic jusqu'au résultat.
+CE QUE J'AI OBSERVÉ : le bouton "Lancer l'analyse" dans app.py appelle
+pipeline_dispatch.run_active_pipeline(), qui appelle SOIT
+grid_analyze.analyze_grid_auto() (système actuel), SOIT analyze()
+(ancien système), jamais les deux.
+CE QUE J'EN AI DÉDUIT : il existe bien deux systèmes distincts dans le
+même projet, avec un seul "aiguillage" central qui choisit lequel
+utiliser.
+FICHIERS IMPORTANTS : app.py, scripts/pipeline_dispatch.py,
+scripts/config.py (qui contient le réglage ACTIVE_PIPELINE).
+
+ÉTAPE 4 — J'ai identifié les "composants" (les blocs qui font chacun
+une seule chose).
+CE QUE J'AI OBSERVÉ : grid_questions.py ne contient QUE la liste des 12
+questions (aucun calcul) ; grid_scoring.py ne contient QUE le calcul du
+score (aucun affichage) ; grid_display.py ne contient QUE l'affichage
+(aucun calcul) ; grid_prompts.py ne contient QUE les textes envoyés au
+robot IA.
+CE QUE J'EN AI DÉDUIT : le projet suit une règle stricte de séparation
+des responsabilités — chaque fichier a un métier précis, jamais mélangé
+avec un autre.
+FICHIERS IMPORTANTS : tous les fichiers scripts/grid_*.py.
+
+ÉTAPE 5 — J'ai relié les données aux écrans.
+CE QUE J'AI OBSERVÉ : le résultat d'une analyse (un gros dictionnaire de
+données appelé "result_v4") est transporté sans modification à travers
+plusieurs fichiers : grid_result.py l'assemble, grid_display.py
+l'affiche à l'écran, export.py le transforme en PDF/Excel,
+analysis_store.py le sauvegarde sur disque. Aucun de ces 4 fichiers ne
+recalcule quoi que ce soit — ils lisent tous exactement le même
+résultat.
+CE QUE J'EN AI DÉDUIT : il existe UN SEUL contrat de données (documenté
+directement dans grid_result.py), respecté partout — c'est ce qui
+garantit que le PDF, l'Excel et l'écran montrent toujours exactement
+la même chose.
+FICHIERS IMPORTANTS : scripts/grid_result.py, scripts/grid_display.py,
+scripts/export.py, scripts/analysis_store.py.
+
+ÉTAPE 6 — J'ai vérifié mes hypothèses en lisant le fichier de tests.
+CE QUE J'AI OBSERVÉ : scripts/test.py contient plus de 450 petites
+vérifications automatiques, qui confirment noir sur blanc le
+comportement que j'avais déduit en lisant le code (par exemple : "si
+aucun passage n'est trouvé pour B.3.1, le statut doit être OUI avec
+-15 points").
+CE QUE J'EN AI DÉDUIT : je n'ai pas eu à deviner le comportement du
+programme — les tests eux-mêmes le démontrent, et je les ai utilisés
+comme une confirmation supplémentaire de ce que j'avais lu dans le
+code.
+FICHIERS IMPORTANTS : scripts/test.py.
+
+ÉTAPE 7 — J'ai lu les fichiers d'infrastructure pour compléter la vue
+d'ensemble.
+CE QUE J'AI OBSERVÉ : docker-compose.yml décrit 3 boîtes séparées,
+Caddyfile montre la protection par mot de passe, requirements.txt liste
+tous les outils externes utilisés (Streamlit, FAISS, sentence-
+transformers, fpdf2, openpyxl, etc.).
+CE QUE J'EN AI DÉDUIT : le déploiement réel de l'application, pas
+seulement son code.
+FICHIERS IMPORTANTS : docker-compose.yml, Dockerfile, Caddyfile,
+requirements.txt.
+
+
+
+================================================================================
+6. PARCOURS COMPLET D'UN UTILISATEUR
+================================================================================
+
+Voici, minute par minute, ce qui se passe vraiment quand Elisa utilise
+l'outil pour analyser un rapport.
+
+ 1. Elisa ouvre son navigateur et tape l'adresse de l'outil.
+ 2. Le gardien (Caddy) lui demande un nom d'utilisateur et un mot de
+    passe.
+ 3. Une fois connectée, l'écran "Transaction Analysis" s'affiche, avec
+    le menu de navigation sur le côté gauche.
+ 4. Elle remplit les 4 informations obligatoires du dossier
+    (classification, sensibilité, montant, rôle de la banque).
+ 5. Elle choisit "Charger un fichier" et dépose son PDF de 52 pages.
+ 6. Elle clique sur "▶ Lancer l'analyse".
+ 7. Le programme sort le texte du PDF, page par page, en gardant en
+    mémoire le numéro de chaque page.
+ 8. Le texte est découpé en petits morceaux d'environ 175 mots chacun.
+ 9. Le robot IA détermine automatiquement le type de document (par
+    exemple "rapport de monitoring multiannuel").
+10. Le robot IA extrait les informations générales du projet (sponsor,
+    pays, secteur...).
+11. Pour chacune des 12 questions, le programme cherche d'abord un
+    passage pertinent (Passe 1), puis, s'il en trouve un, demande au
+    robot de juger si c'est vraiment un risque et si une réparation
+    existe (Passe 2).
+12. Une fois les 12 réponses obtenues, le programme calcule la note sur
+    100 avec une simple formule, sans appel au robot IA.
+13. Le robot IA rédige une petite synthèse en français, en se basant
+    uniquement sur le résultat déjà calculé.
+14. L'analyse est enregistrée automatiquement dans un fichier, pour
+    pouvoir être retrouvée plus tard.
+15. L'écran affiche : le score en grand avec sa couleur, la synthèse, la
+    liste des principaux facteurs de risque, les points à vérifier, les
+    points favorables, puis la grille détaillée des 12 questions.
+16. Elisa clique sur une question pour en voir le détail complet et la
+    citation exacte du rapport.
+17. Elle télécharge le PDF pour le joindre à son mémo de comité de
+    crédit, et l'Excel pour pouvoir trier les données.
+18. Le lendemain, sans re-télécharger le PDF, elle va dans "Portfolio
+    Dashboard", retrouve son analyse dans la liste, et la recharge d'un
+    clic pour la revoir.
+
+
+
+================================================================================
+7. DICTIONNAIRE DES MOTS COMPLIQUÉS
+================================================================================
+
+API : Un peu comme un serveur dans un restaurant, qui transmet une
+commande à la cuisine et rapporte le plat. Ici, c'est le lien entre le
+programme et le robot IA (Together AI ou Ollama) : le programme envoie
+une "commande" (une question), le robot répond.
+
+Backend : La partie "cerveau" d'un programme, celle qu'on ne voit pas
+directement à l'écran, mais qui fait les calculs.
+
+Base de données : Normalement, une grande armoire électronique où l'on
+range des informations pour les retrouver facilement. Ce projet n'en a
+pas de vraie — il utilise des fichiers rangés sur le disque, comme des
+chemises en carton sur une étagère.
+
+Cache : Un petit carnet de notes où le programme écrit une réponse déjà
+obtenue, pour ne pas avoir à la redemander une deuxième fois si la même
+question revient.
+
+Chunk (prononcé "tchonk") : Un petit morceau de texte, obtenu en
+découpant un long document en tranches d'environ 175 mots.
+
+Docker : Une façon d'emballer un programme dans une "boîte" toute
+prête, avec tout ce dont il a besoin dedans, pour qu'il fonctionne pareil
+partout où on l'installe.
+
+Embedding : Une longue suite de nombres qui représente le "sens" d'un
+morceau de texte. Deux textes qui parlent de la même chose ont des
+suites de nombres proches, un peu comme deux adresses proches sur une
+carte.
+
+Fail-open ("échouer en laissant passer") : Une règle appliquée partout
+dans ce projet — si le robot IA ne répond pas (panne, coupure
+Internet), le programme ne plante jamais : il continue avec un résultat
+de secours, plutôt que de tout arrêter.
+
+FAISS : Le nom du grand classeur qui range tous les "embeddings" des
+anciens rapports, organisé pour qu'on puisse retrouver très vite les
+voisins les plus ressemblants d'un nouveau texte.
+
+Fiche/dictionnaire (data) : Une petite fiche d'informations organisées
+par étiquettes, par exemple {"score": 70, "couleur": "JAUNE"}.
+
+Grade : Une lettre (A, B, C ou D) qui résume rapidement un niveau de
+risque dans l'ancien système, du plus grave (A) au moins grave (D).
+
+JSON : Un format d'écriture très structuré (des accolades, des
+guillemets, des deux-points), utilisé pour que le robot IA réponde
+toujours de façon prévisible, comme remplir un formulaire avec des
+cases précises plutôt que d'écrire un texte libre.
+
+LLM (Large Language Model, "grand modèle de langage") : Le robot IA
+capable de lire un texte et de répondre à des questions dessus, comme
+un assistant qui a beaucoup lu et qui sait discuter.
+
+Mitigation (atténuation) : Une mesure prise pour réparer ou réduire un
+problème déjà identifié.
+
+PDF : Le format de fichier le plus courant pour un rapport
+"impossible à modifier facilement", qui garde toujours la même
+présentation quel que soit l'ordinateur qui l'ouvre.
+
+Pipeline : Une chaîne d'étapes qui se suivent, comme une chaîne de
+montage en usine — le texte entre d'un côté, le résultat sort de
+l'autre.
+
+Prompt : Le texte de consigne qu'on envoie au robot IA pour lui
+expliquer ce qu'on attend de lui.
+
+Repository / repo ("dépôt") : Le dossier complet qui contient tout le
+code du projet.
+
+Score / note : Un chiffre entre 0 et 100 qui résume le niveau de risque
+d'un dossier, calculé selon une formule fixe.
+
+Streamlit : L'outil utilisé pour dessiner l'écran de l'application
+directement en langage Python, sans avoir besoin d'écrire un vrai site
+web séparé.
+
+Verbatim : Une citation copiée EXACTEMENT telle quelle depuis le
+rapport original, sans reformulation, pour servir de preuve.
+
+
+
+================================================================================
+8. RÉSUMÉ FINAL
+================================================================================
+
+QUE SAIT FAIRE L'APPLICATION AUJOURD'HUI ?
+
+Elle sait lire un rapport ESG (jusqu'à 70 pages), poser 12 questions
+précises dessus avec un robot IA, calculer une note sur 100 de façon
+transparente et toujours reproductible, écrire une petite synthèse en
+français, tout afficher clairement à l'écran, exporter le résultat en
+PDF et en Excel, et garder en mémoire toutes les analyses déjà faites
+pour pouvoir les retrouver plus tard sans tout refaire.
+
+QUELLES SONT SES PLUS GRANDES FORCES ?
+
+  - La transparence : chaque réponse OUI/NON s'accompagne toujours
+    d'une preuve exacte (ou d'une explication claire quand il n'y en a
+    pas), jamais une note qui tombe du ciel sans justification.
+  - Le calcul du score est simple et fixe (pas une "boîte noire"
+    d'intelligence artificielle) — deux personnes qui refont le calcul
+    obtiennent toujours le même résultat.
+  - Le programme ne plante jamais à cause du robot IA : s'il ne répond
+    pas, l'analyse continue quand même, avec un signal clair que
+    quelque chose n'a pas pu être vérifié.
+  - Rien n'est décidé à la place de l'analyste : l'outil donne des
+    indications, jamais un verdict final d'approbation ou de refus.
+
+QUELS MODULES COMPOSENT LE PROJET ?
+
+  - L'écran (app.py) — ce que l'analyste voit et touche.
+  - Le moteur de la Grille V4 (grid_questions.py, grid_prompts.py,
+    grid_analyze.py, grid_scoring.py, grid_result.py, grid_display.py,
+    grid_sections.py, grid_doctype.py, grid_metadata.py) — le système
+    actuellement utilisé.
+  - L'ancien moteur (search.py, model.py, analyze.py, deep_analysis.py,
+    llm_confirm.py) — toujours présent, plus utilisé par défaut.
+  - Le pont vers le robot IA (llm_backend.py) et l'aiguillage entre les
+    deux moteurs (pipeline_dispatch.py, config.py).
+  - Les exports (export.py) et la conservation des analyses
+    (analysis_store.py).
+  - Les outils de préparation des données en coulisses (ingest.py,
+    pipeline.py, annote.py, chunk_metadata.py).
+  - Le déploiement (Dockerfile, docker-compose.yml, Caddyfile).
+
+COMMENT TOUT FONCTIONNE ENSEMBLE ?
+
+L'écran collecte les informations et le document. Il les passe à
+l'aiguillage central, qui choisit le moteur actuel (la Grille V4).
+Ce moteur découpe le texte, interroge le robot IA question par
+question, calcule une note sur 100 avec une formule fixe, puis demande
+au robot IA une synthèse finale. Le résultat, toujours dans le même
+format, est ensuite affiché à l'écran, transformé en PDF/Excel, et
+sauvegardé sur le disque pour pouvoir être retrouvé plus tard — le
+tout protégé par un mot de passe à l'entrée.
+
+================================================================================
+FIN DU RAPPORT
+================================================================================

@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-08-24 — Suppression d'analyse, désactivation Pattern Library/Settings, annexe méthodologique, reformulation R5
+
+**Portfolio Dashboard — suppression d'une analyse sauvegardée** :
+`scripts/analysis_store.py::delete_analysis()` (fail-open, même style que
+`save_analysis`/`load_analysis`) + modal de confirmation native
+(`@st.dialog`, `app.py`) sur la page Portfolio Dashboard (pipeline V4
+uniquement — historique de session du pipeline legacy non concerné,
+comme pour la persistance elle-même). Irréversible, "Annuler"/"Supprimer"
+explicites, rafraîchissement automatique de la liste après suppression
+(`st.rerun()`), sans toucher l'aperçu chargé sauf si c'est justement
+l'analyse supprimée.
+
+**Pattern Library et Settings retirés de la navigation** : Elisa n'utilise
+ni l'une ni l'autre (confirmé par Archange). `_nav_sections` réduit à
+Transaction Analysis / Portfolio Dashboard dans `app.py`. Les blocs
+`elif page == "📚 Pattern Library":` / `elif page == "⚙️ Settings":`
+restent dans le code (convention CODE MORT — jamais de suppression
+silencieuse), désormais inatteignables. Settings ne pilotait de toute
+façon que les seuils de grade A/B/C/D du pipeline legacy (`risk_
+thresholds`), sans aucun effet sur le pipeline V4 par défaut.
+
+**Reformulation de l'explication B.3.1/B.3.2 (silence = risque)** :
+`scripts/grid_analyze.py::_SILENCE_CONFIRMS_ABSENCE_NOTE` renvoyait à
+"(cf. règle R5)", un code de règle interne incompréhensible côté métier
+(retour direct : "les gars ne savent pas ce que ça signifie cette
+phrase"). Remplacé par une explication en clair du mécanisme (pourquoi
+CE silence précis pénalise, contrairement aux autres questions où rien
+trouvé ne pénalise pas) — source unique, propagée automatiquement au
+résumé UI, au détail de la grille, au PDF et à l'Excel.
+
+**Annexe méthodologique statique dans les exports PDF/Excel** :
+`scripts/export.py::_METHODOLOGY_CONTENT` (constante unique, réutilisée
+par `build_grid_v4_pdf` et `build_grid_v4_excel`) — barème de scoring
+(dont les 4 seuils de verdict VERT≥75/JAUNE 50-74/ORANGE 25-49/ROUGE<25),
+règle du silence par type de question, critères de validation de la
+mitigation (filtres temporel + preuve, cas OUI-défaillante sans gain),
+limites de l'analyse. Contenu identique pour tous les dossiers — objectif
+auditabilité (CHOIX documenté dans `export.py`). PDF : nouvelle dernière
+page. Excel : nouvelle feuille "Methodologie" après "Detail" (le classeur
+passe donc de 3 à 4 feuilles).
+
+**Tests** : `python scripts/test.py --unit --integ --business` —
+466/466 passés (mise à jour d'une assertion préexistante qui vérifiait
+encore l'ancien nombre de feuilles Excel, et ajout de nouvelles
+assertions ciblées sur l'annexe méthodologique et la reformulation R5).
+
 ## 2026-08-19 — Restauration Maquette Vierge (12 questions) + R2 conditionnelle + 4 champs manuels (directive CC-V4-11)
 
 **Contexte** : 3 dossiers testés, 3 scores faux (CBG 85 au lieu de 28-31,
