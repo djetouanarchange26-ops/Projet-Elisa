@@ -124,3 +124,20 @@ def load_analysis(path):
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("analysis_store: échec chargement %s : %s", path, e)
         return None
+
+
+def delete_analysis(path):
+    """Supprime définitivement une analyse sauvegardée (Portfolio
+    Dashboard, action irréversible confirmée côté UI). Fail-open (ADR-002,
+    même esprit que save_analysis/load_analysis) : ne lève jamais.
+    Retourne True si le fichier a été supprimé, False sinon (déjà absent
+    ou erreur disque — l'appelant affiche une erreur dans ce cas)."""
+    path = Path(path)
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        logger.warning("analysis_store: échec suppression %s : %s", path, e)
+        return False

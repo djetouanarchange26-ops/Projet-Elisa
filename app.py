@@ -752,7 +752,16 @@ with st.sidebar:
     # config.ACTIVE_PIPELINE="v4". L'ancien onglet dupliquait la navigation
     # pour un résultat déjà calculé dans la même action "Run Analysis" ;
     # supprimé pour n'avoir qu'un seul système de scoring visible dans l'UI.
-    _nav_sections = ["🔍 Transaction Analysis", "📊 Portfolio Dashboard", "📚 Pattern Library", "⚙️ Settings"]
+    # CODE MORT (2026-08-24, directive Archange) : "Pattern Library" et
+    # "Settings" retirés de la navigation — Elisa n'utilise ni l'une ni
+    # l'autre. Les blocs `elif page == "📚 Pattern Library":` /
+    # `elif page == "⚙️ Settings":` plus bas sont donc désormais
+    # inatteignables (page ne peut plus valoir ces libellés) mais PAS
+    # supprimés (cf. convention CODE MORT, CLAUDE.md) : Pattern Library
+    # reste candidat à une refonte post-MVP sur les thèmes de la grille,
+    # Settings ne pilote de toute façon que le pipeline legacy (aucun
+    # effet sur le pipeline V4 présenté).
+    _nav_sections = ["🔍 Transaction Analysis", "📊 Portfolio Dashboard"]
     page = st.radio(
         "Section",
         _nav_sections,
@@ -1372,6 +1381,32 @@ elif page == "📊 Portfolio Dashboard":
         st.markdown("*Analyses sauvegardées — l'analyste n'a pas à ré-uploader un document déjà analysé*")
         import analysis_store
 
+        @st.dialog("Supprimer cette analyse ?")
+        def _confirm_delete_analysis(_path, _label):
+            # CHOIX: st.dialog (natif Streamlit >=1.37, dispo ici en 1.58) —
+            # pas de composant custom, cohérent avec le reste de l'app qui
+            # n'a aucun pattern de modal existant à réutiliser. type="primary"
+            # sur "Supprimer" (même code que "Lancer l'analyse" ligne ~892) :
+            # seul bouton important de l'écran, couleur d'accent du thème
+            # (rouge/corail par défaut, aucun thème custom dans
+            # .streamlit/config.toml) — suffisant pour signaler l'action
+            # destructive sans CSS fragile ciblant le DOM interne Streamlit.
+            st.warning("⚠️ Cette action est irréversible.")
+            st.markdown(f"Voulez-vous supprimer ce dossier ?\n\n**{_label}**")
+            col_cancel, col_delete = st.columns(2)
+            with col_cancel:
+                if st.button("Annuler", use_container_width=True):
+                    st.rerun()
+            with col_delete:
+                if st.button("🗑️ Supprimer", type="primary", use_container_width=True):
+                    if analysis_store.delete_analysis(_path):
+                        if st.session_state.get("_loaded_analysis_path") == _path:
+                            st.session_state.pop("_loaded_analysis", None)
+                            st.session_state.pop("_loaded_analysis_path", None)
+                        st.rerun()
+                    else:
+                        st.error("Échec de la suppression (fichier déjà supprimé ou erreur disque).")
+
         analyses = analysis_store.list_analyses()
         if not analyses:
             st.info(
@@ -1419,12 +1454,18 @@ elif page == "📊 Portfolio Dashboard":
                 st.caption("Aucune analyse ne correspond au filtre ci-dessus.")
             else:
                 choice_label = st.selectbox("Analyse à consulter", list(options.keys()))
-                if st.button("📂 Charger cette analyse"):
-                    loaded = analysis_store.load_analysis(options[choice_label])
-                    if loaded is None:
-                        st.error("Impossible de charger cette analyse (fichier corrompu ou déplacé).")
-                    else:
-                        st.session_state["_loaded_analysis"] = loaded
+                col_load, col_delete = st.columns(2)
+                with col_load:
+                    if st.button("📂 Charger cette analyse", use_container_width=True):
+                        loaded = analysis_store.load_analysis(options[choice_label])
+                        if loaded is None:
+                            st.error("Impossible de charger cette analyse (fichier corrompu ou déplacé).")
+                        else:
+                            st.session_state["_loaded_analysis"] = loaded
+                            st.session_state["_loaded_analysis_path"] = options[choice_label]
+                with col_delete:
+                    if st.button("🗑️ Supprimer cette analyse", use_container_width=True):
+                        _confirm_delete_analysis(options[choice_label], choice_label)
 
             loaded = st.session_state.get("_loaded_analysis")
             if loaded:
@@ -1490,6 +1531,10 @@ elif page == "📊 Portfolio Dashboard":
 
 # ══════════════════════════════════════════════════════════════
 # PAGE 3 — PATTERN LIBRARY
+# CODE MORT (2026-08-24, directive Archange) : retiré de _nav_sections
+# (Elisa ne l'utilise pas) — bloc inatteignable, conservé pour une
+# éventuelle refonte post-MVP (regroupement par thèmes de la grille
+# plutôt que par les 3 anciens flags community/pollution/compliance).
 # ══════════════════════════════════════════════════════════════
 elif page == "📚 Pattern Library":
     st.markdown("## 📚 Pattern Library")
@@ -1519,6 +1564,11 @@ elif page == "📚 Pattern Library":
 
 # ══════════════════════════════════════════════════════════════
 # PAGE 4 — SETTINGS
+# CODE MORT (2026-08-24, directive Archange) : retiré de _nav_sections
+# (Elisa ne l'utilise pas) — bloc inatteignable, conservé car le bloc
+# "Corpus Info" est inoffensif ; les sliders "Risk Grade Thresholds" ne
+# pilotaient de toute façon que le pipeline legacy (aucun effet sur le
+# pipeline V4, cf. config.ACTIVE_PIPELINE="v4" par défaut).
 # ══════════════════════════════════════════════════════════════
 elif page == "⚙️ Settings":
     st.markdown("## ⚙️ Settings")
