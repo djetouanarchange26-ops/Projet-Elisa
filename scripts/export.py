@@ -446,6 +446,99 @@ def _write_project_metadata_sentence(pdf, metadata):
     return True
 
 
+# ============================================================================
+# ANNEXE METHODOLOGIQUE (statique, identique pour tous les dossiers)
+# ============================================================================
+# CHOIX: contenu statique, PAS conditionnel au resultat du dossier analyse --
+# l'objectif est l'auditabilite (un auditeur ou un comite de credit doit
+# pouvoir comprendre le bareme, la regle du silence et les criteres de
+# mitigation en lisant l'export seul, sans acces a l'application ni au
+# code). Deux dossiers evalues avec le meme bareme doivent produire la
+# meme annexe -- une variation deviendrait elle-meme une source de doute.
+# Definie une seule fois ici (liste de tuples (label, explication),
+# explication=None pour un titre de section), reutilisee telle quelle par
+# build_grid_v4_pdf et build_grid_v4_excel : une seule source a maintenir
+# si le bareme evolue (cf. grid_scoring.py/grid_questions.py, valeurs
+# recopiees ici en texte -- pas d'import de constantes de calcul, cette
+# annexe est de la documentation, pas une source de verite).
+_METHODOLOGY_CONTENT = [
+    ("1. Bareme de scoring", None),
+    ("Categorie A (Bloqueurs)",
+     "-25 pts par risque confirme (R=OUI), +5 pts si mitigation validee "
+     "(statut \"OUI - prouvee\" uniquement, ratio 20%)."),
+    ("Categorie B (Structurants)",
+     "-15 pts par risque confirme, +3 pts si mitigation validee (ratio 20%)."),
+    ("Calcul du score",
+     "Score = max(0, 100 - somme des penalites + somme des attenuations), "
+     "attenuation totale plafonnee a +20 pts."),
+    ("Seuils de verdict",
+     "VERT >= 75 / JAUNE 50-74 / ORANGE 25-49 / ROUGE < 25. Un score de 0 "
+     "est signale \"ROUGE - Eliminatoire\" (score plancher, distinct du "
+     "reste de la zone ROUGE)."),
+
+    ("2. Regle du silence - interpretation de l'absence d'information", None),
+    ("Question \"Evenement\" (ex. greve, action en justice, deplacement de population)",
+     "Aucune mention -> NON (pas de mention = pas d'evenement survenu)."),
+    ("Question \"Etat\" (ex. depassements de seuils de pollution)",
+     "Aucune mention -> INCONNU (ne pas mesurer/documenter n'est pas une "
+     "preuve d'absence du probleme)."),
+    ("Question \"Absence-confirme\" (B.3.1 et B.3.2 uniquement)",
+     "Aucune mention -> OUI penalisant. Ces deux questions portent sur "
+     "l'absence d'un dispositif (donnees de reference socio-economiques / "
+     "reporting ESG periodique) : ne rien trouver confirme directement "
+     "cette absence."),
+
+    ("3. Criteres de validation de la mitigation", None),
+    ("Filtre temporel",
+     "Seul l'accompli compte (mesure deja realisee) - une intention, un "
+     "plan ou un engagement futur/conditionnel echoue a ce filtre."),
+    ("Filtre de preuve",
+     "Seules 3 formes sont acceptees : accord formel signe, investissement "
+     "materiel receptionne, verification par un tiers independant. Un "
+     "plan, une procedure, une politique, un recrutement ou une formation "
+     "ne sont PAS des preuves, meme enonces au passe."),
+    ("Gain de points",
+     "Seul le statut \"OUI - prouvee\" (passe les deux filtres, aucune "
+     "defaillance constatee) genere un gain. Le statut \"OUI - "
+     "defaillante\" (mesure existante mais document etablissant qu'elle "
+     "n'a pas produit son effet, ou qu'elle a ete interrompue) ne genere "
+     "aucun gain."),
+    ("Perimetre de la preuve",
+     "Le fait ou la preuve doit concerner le projet lui-meme (la SPV) : "
+     "un manquement ou une mesure attribues au preteur (IFC/SFI) ou a un "
+     "tiers non imputable au projet ne comptent pas."),
+
+    ("4. Limites de l'analyse", None),
+    ("Un seul document a la fois",
+     "L'evaluation ne croise pas plusieurs rapports entre eux."),
+    ("Score non calcule par l'IA",
+     "L'IA extrait les passages, le calcul du score est deterministe "
+     "(arithmetique, aucun appel au modele de langage dans le calcul "
+     "lui-meme)."),
+    ("Sur-detection volontaire (fail-open)",
+     "Un faux positif se verifie en 30 secondes a la lecture du document, "
+     "un faux negatif peut couter beaucoup plus cher."),
+]
+
+
+def _write_methodology_annex(pdf):
+    """Ecrit l'annexe methodologique en fin de PDF (derniere page) -- cf.
+    _METHODOLOGY_CONTENT pour le detail du contenu et pourquoi il est
+    statique (identique pour tous les dossiers)."""
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "Annexe - Methodologie d'evaluation", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    for label, explanation in _METHODOLOGY_CONTENT:
+        if explanation is None:
+            pdf.ln(2)
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, _safe(label), new_x="LMARGIN", new_y="NEXT")
+            continue
+        _write_segments(pdf, [(f"{label} : ", True), (explanation, False)], size=9, line_height=5, ln_after=6)
+
+
 def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     """Génère un rapport PDF de la Grille V4 (12 questions), maquette Elisa
     2026-08-20.
@@ -465,6 +558,9 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
     - Page 2 : tableau des 12 questions + ligne de total
     - Pages suivantes : detail par question, UNIQUEMENT OUI et INCONNU
       (les NON ne sont plus detailles, cf. "Ce qu'il ne faut PAS faire")
+    - Derniere page : annexe "Methodologie d'evaluation", texte STATIQUE
+      identique pour tous les dossiers (cf. _METHODOLOGY_CONTENT et
+      _write_methodology_annex)
     - Pied de page "Confidentiel - Genere le [date]" sur toutes les pages
       (cf. _GridV4PDF.footer)
 
@@ -716,6 +812,9 @@ def build_grid_v4_pdf(result_v4, project_name="", filename="esg_grid_v4.pdf"):
             pdf.set_draw_color(0, 0, 0)
             pdf.ln(3)
 
+    # --- Derniere page : annexe methodologique (statique) ---
+    _write_methodology_annex(pdf)
+
     return bytes(pdf.output())
 
 
@@ -729,6 +828,23 @@ _STATUS_FILL_V4 = {"OUI": _PENALTY_FILL_V4, "NON": _GAIN_FILL_V4, "INCONNU": _IN
 _WRAP_TOP_V4 = Alignment(wrap_text=True, vertical="top")
 
 
+def _build_methodology_sheet(wb):
+    """Ajoute la feuille "Methodologie" (derniere feuille du classeur) --
+    cf. _METHODOLOGY_CONTENT pour le detail du contenu et pourquoi il est
+    statique (identique pour tous les dossiers)."""
+    ws = wb.create_sheet("Methodologie")
+    _write_header_row(ws, 1, ["Regle", "Explication"])
+    for label, explanation in _METHODOLOGY_CONTENT:
+        if explanation is None:
+            ws.append([label, ""])
+            ws.cell(row=ws.max_row, column=1).font = Font(bold=True, size=12)
+            continue
+        ws.append([label, explanation])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+        ws.cell(row=ws.max_row, column=2).alignment = _WRAP_TOP_V4
+    _autofit(ws, [40, 90])
+
+
 def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx"):
     """Génère un classeur Excel de la Grille V4 (12 questions), maquette
     Elisa 2026-08-20.
@@ -736,7 +852,7 @@ def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx")
     CHOIX: openpyxl comme l'export existant — pas de nouvelle dépendance.
     `filename` non utilisé (cf. build_grid_v4_pdf ci-dessus).
 
-    3 feuilles (maquette — remplace l'ancien découpage à 4 feuilles
+    4 feuilles (maquette — remplace l'ancien découpage à 4 feuilles
     Synthese/Grille/Evidence/Qualifiants) :
     - Synthese : score, contexte, mode, métriques agrégées + tableau des
       signaux identifiés (OUI/INCONNU), verbatim TRONQUÉ à 200 caractères
@@ -745,6 +861,9 @@ def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx")
     - Detail   : une ligne par question OUI/INCONNU, verbatims COMPLETS,
       jamais tronqués (cf. directive : "l'analyste veut pouvoir
       copier-coller"), colonnes larges + wrap_text
+    - Methodologie : annexe statique (barème, règle du silence, critères
+      de mitigation, limites) — identique pour tous les dossiers, cf.
+      _METHODOLOGY_CONTENT et _build_methodology_sheet
 
     Retourne des bytes, prêts pour st.download_button.
     """
@@ -849,6 +968,9 @@ def build_grid_v4_excel(result_v4, project_name="", filename="esg_grid_v4.xlsx")
         for col in (3, 5, 6, 7):
             ws3.cell(row=row_idx, column=col).alignment = _WRAP_TOP_V4
     _autofit(ws3, [10, 10, 60, 8, 60, 60, 40])
+
+    # --- Feuille Methodologie (statique, cf. _METHODOLOGY_CONTENT) ---
+    _build_methodology_sheet(wb)
 
     buffer = io.BytesIO()
     wb.save(buffer)

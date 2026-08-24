@@ -2319,16 +2319,17 @@ def test_grid_v4_export():
     _test("build_grid_v4_excel : signature PK (format ZIP/xlsx)",
           xlsx_bytes[:2] == b"PK", f"Obtenu : {xlsx_bytes[:2]!r}")
 
-    # --- Contenu Excel : 3 feuilles (Synthese/Grille/Detail), remplissage
-    # conditionnel — structure maquette Elisa 2026-08-20 (remplace l'ancien
-    # découpage à 4 feuilles Synthese/Grille/Evidence/Qualifiants, cf.
-    # directive refonte exports).
+    # --- Contenu Excel : 4 feuilles (Synthese/Grille/Detail/Methodologie),
+    # remplissage conditionnel — structure maquette Elisa 2026-08-20
+    # (remplace l'ancien découpage à 4 feuilles Synthese/Grille/Evidence/
+    # Qualifiants, cf. directive refonte exports), + annexe méthodologique
+    # statique ajoutée le 2026-08-24 (auditabilité).
     import io
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(xlsx_bytes))
-    _test("Excel : 3 feuilles (Synthese, Grille, Detail)",
-          wb.sheetnames == ["Synthese", "Grille", "Detail"],
+    _test("Excel : 4 feuilles (Synthese, Grille, Detail, Methodologie)",
+          wb.sheetnames == ["Synthese", "Grille", "Detail", "Methodologie"],
           f"Obtenu : {wb.sheetnames}")
 
     ws_grille = wb["Grille"]
@@ -2351,6 +2352,29 @@ def test_grid_v4_export():
               "Code", "Statut", "Verbatim risque", "Page",
               "Verbatim mitigation", "Defaillance", "Confiance",
           ])
+
+    # --- Annexe methodologique (export._METHODOLOGY_CONTENT), statique --
+    # identique pour tous les dossiers, cf. CHOIX dans export.py : un
+    # auditeur doit comprendre le bareme/la regle du silence/les criteres
+    # de mitigation sans acces a l'application. ---
+    ws_methodo = wb["Methodologie"]
+    _test("Excel/Methodologie : au moins une ligne de donnees",
+          ws_methodo.max_row > 1, f"Obtenu : {ws_methodo.max_row}")
+    _test("Excel/Methodologie : colonnes attendues (Regle/Explication)",
+          [c.value for c in ws_methodo[1]] == ["Regle", "Explication"])
+    methodo_labels = [ws_methodo.cell(row=r, column=1).value for r in range(2, ws_methodo.max_row + 1)]
+    _test("Excel/Methodologie : seuils de verdict presents",
+          "Seuils de verdict" in methodo_labels, f"Obtenu : {methodo_labels}")
+
+    from export import _GridV4PDF, _write_methodology_annex
+    pdf_annex = _GridV4PDF()
+    pdf_annex.set_auto_page_break(auto=True, margin=20)
+    pdf_annex.add_page()
+    pages_before = pdf_annex.page_no()
+    _write_methodology_annex(pdf_annex)
+    _test("PDF : l'annexe methodologique ajoute une nouvelle page",
+          pdf_annex.page_no() == pages_before + 1,
+          f"Obtenu : {pages_before} -> {pdf_annex.page_no()}")
 
 
 def test_pdf_question_sentence():
